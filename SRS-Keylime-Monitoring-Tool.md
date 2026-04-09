@@ -49,7 +49,7 @@ The System transforms Keylime from a CLI-driven security tool into a visual oper
 | FR-024 | Attestation analytics overview (volume, failures, latency) | MUST | Attestation Analytics - Overview Dashboard |
 | FR-025 | Failure categorization by type and severity | MUST | Attestation Analytics - Failure Analysis |
 | FR-026 | Automatic failure correlation across agents | MUST | Attestation Analytics - Automatic Correlation |
-| FR-027 | Incident grouping with suggested root cause | MUST | Attestation Analytics - Actionable Insights |
+| FR-027 | Root cause suggestion and recommended actions (distinct from FR-026 grouping) | MUST | Attestation Analytics - Actionable Insights |
 | FR-028 | One-click policy rollback from incident view | SHOULD | Attestation Analytics - Actionable Insights |
 | FR-029 | Push mode (v3 API) attestation analytics | MUST | Attestation Analytics - Push Mode |
 | FR-030 | Verification pipeline stage visualization | MUST | Verification Pipeline - Flow Visualization |
@@ -62,7 +62,7 @@ The System transforms Keylime from a CLI-driven security tool into a visual oper
 | FR-037 | Policy assignment matrix | MUST | Policy Management - Policy Editor |
 | FR-038 | Pre-update policy impact analysis | MUST | Policy Management - Impact Analysis |
 | FR-039 | Two-person rule for policy changes | MUST | Policy Management - Two-Person Rule |
-| FR-040 | Time-limited approval window for policy changes | MUST | Policy Management - Two-Person Rule |
+| FR-040 | *(Merged into FR-039)* | — | — |
 | FR-041 | Change management integration (ServiceNow, Jira) | MAY | Policy Management - Two-Person Rule |
 | FR-042 | Security audit event log with filtering | MUST | Security Audit - Event Log Dashboard |
 | FR-043 | Authorization tracking by action and identity type | MUST | Security Audit - Authorization Tracking |
@@ -101,8 +101,8 @@ The System transforms Keylime from a CLI-driven security tool into a visual oper
 | NFR-001 | KPI data refresh within 30 seconds | MUST | Dashboard - Key Performance Indicators |
 | NFR-002 | Support Keylime API v2 and v3 simultaneously | MUST | Keylime - Data Model Overview |
 | NFR-003 | API-first, non-invasive architecture (zero Keylime modifications) | MUST | Technical Architecture - System Design |
-| NFR-004 | React.js + TypeScript SPA frontend | MUST | Technical Architecture - Data Flow |
-| NFR-005 | Rust (Axum) async backend | MUST | Technical Architecture - Why Rust |
+| NFR-004 | SPA frontend with client-side routing (<3s initial load on 10 Mbps) | MUST | Technical Architecture - Data Flow |
+| NFR-005 | Async backend supporting 10K concurrent WebSocket connections (<100ms p99) | MUST | Technical Architecture - Why Rust |
 | NFR-006 | Event-driven ingestion as primary data path | MUST | Technical Architecture - Event-Driven Ingestion |
 | NFR-007 | Polling fallback with adaptive backpressure | MUST | Technical Architecture - Event-Driven Ingestion |
 | NFR-008 | Scale to 100K+ agents under event-driven mode | SHOULD | Scalability - Ingestion Model Comparison |
@@ -179,6 +179,12 @@ Feature: Fleet Overview KPI Dashboard
     And the Attestation Success Rate MUST be computed from attestation history
     And Certificate Expiry Warnings MUST reflect certificates expiring within 30 days
 
+  Scenario: Verifier API unreachable
+    Given the dashboard backend cannot connect to the Verifier API
+    When the user navigates to the Fleet Overview Dashboard
+    Then the dashboard MUST display cached KPI data with a staleness indicator
+    And a banner MUST warn "Verifier API unreachable — data may be stale"
+
   Scenario: Failed agent threshold alert
     Given the alert threshold for Failed Agents is configured to "any count > 0"
     When 1 or more agents enter state 7 (FAILED), 9 (INVALID_QUOTE), or 10 (TENANT_FAILED)
@@ -206,7 +212,14 @@ Feature: KPI Data Auto-Refresh
     Given the backend supports WebSocket push
     And a WebSocket connection is established
     When the backend receives an agent state change event
-    Then the updated KPI data MUST be pushed to the browser within 1 second
+    Then the updated KPI data MUST be pushed to the browser
+    And the dashboard MUST re-render affected KPI values
+
+  Scenario: WebSocket connection lost
+    Given a WebSocket connection was established
+    When the connection drops unexpectedly
+    Then the System MUST fall back to HTTP polling at the configured interval
+    And a connection status indicator MUST show "reconnecting"
 ```
 
 ### FR-003: Sidebar Navigation
@@ -228,6 +241,12 @@ Feature: Sidebar Navigation
     Given the user is authenticated
     Then the sidebar MUST display navigation entries for all 10 core modules
     And each entry MUST route to its corresponding view
+
+  Scenario: Unauthenticated user cannot access sidebar
+    Given the user is not authenticated
+    When the user attempts to access any dashboard view
+    Then the System MUST redirect the user to the login page
+    And no sidebar navigation MUST be rendered
 ```
 
 ### FR-004: Global Agent Search
@@ -249,6 +268,17 @@ Feature: Global Agent Search
     When the user searches for "192.168.1.0/24"
     Then the search results MUST include agents at 192.168.1.10 and 192.168.1.11
     And the results MUST NOT include the agent at 192.168.2.10
+
+  Scenario: Search returns no results
+    Given the agent fleet contains 250 agents
+    When the user searches for "nonexistent-uuid-xyz"
+    Then the search results MUST display an empty state with message "No agents found"
+
+  Scenario: Invalid CIDR notation
+    Given the user enters "192.168.1.0/99" in the search bar
+    When the search is submitted
+    Then the System MUST display a validation error indicating invalid CIDR notation
+    And no search request MUST be sent to the backend
 ```
 
 ### FR-005: Time Range Selector
@@ -270,6 +300,12 @@ Feature: Time Range Selector
     Given the user selects "Custom" in the time range selector
     When the user specifies a start date of "2026-02-20" and end date of "2026-02-25"
     Then only data within that date range MUST be displayed
+
+  Scenario: Invalid date range rejected
+    Given the user selects "Custom" in the time range selector
+    When the user specifies a start date later than the end date
+    Then the System MUST display a validation error "Start date must be before end date"
+    And the previous time range MUST remain active
 ```
 
 ### FR-006: Auto-Refresh Toggle
@@ -313,6 +349,11 @@ Feature: Data Export
     Given the user has the Viewer role
     When the user looks for the Export button
     Then the Export button MUST be disabled or hidden
+
+  Scenario: Export with empty filter result
+    Given the user has applied filters that match zero agents
+    When the user clicks "Export"
+    Then the Export action MUST be disabled or display "No data to export"
 ```
 
 ### FR-008: Dark/Light Mode
@@ -327,8 +368,8 @@ Feature: Dark/Light Mode
   Scenario: Switch to dark mode
     Given the user is viewing the dashboard in light mode
     When the user selects "Dark Mode" in the theme settings
-    Then the entire dashboard UI MUST render with a dark color scheme
-    And the preference MUST persist across sessions
+    Then the entire dashboard UI SHOULD render with a dark color scheme
+    And the preference SHOULD persist across sessions
 ```
 
 ### FR-009: In-App Notification System
@@ -350,6 +391,12 @@ Feature: In-App Notification System
     When the user opens the notification panel and clicks a notification
     Then the notification MUST be marked as read
     And the badge count MUST decrement by 1
+
+  Scenario: No notifications available
+    Given there are zero unread notifications
+    When the user opens the notification panel
+    Then the panel MUST display an empty state with message "No new notifications"
+    And the notification bell MUST NOT display a badge count
 ```
 
 ### FR-010: External Alert Integration
@@ -367,6 +414,12 @@ Feature: External Alert Integration
     When a CRITICAL attestation failure is detected
     Then the System SHOULD send a notification to the configured Slack channel
     And the notification MUST include the agent ID, failure type, and timestamp
+
+  Scenario: External integration endpoint unreachable
+    Given Slack webhook integration is configured
+    When the System attempts to send a notification and the webhook endpoint is unreachable
+    Then the System MUST retry delivery according to the configured retry policy
+    And the System MUST log the delivery failure in the audit log
 ```
 
 ### FR-011: Configurable Alert Thresholds
@@ -388,6 +441,12 @@ Feature: Configurable Alert Thresholds
     Given no custom thresholds are configured
     When the attestation success rate falls below 99%
     Then the System MUST raise an alert using the default threshold
+
+  Scenario: Non-Admin cannot configure thresholds
+    Given the user has the Operator role
+    When the user attempts to change the attestation success rate threshold
+    Then the System MUST deny the action with an insufficient permissions error
+    And the threshold MUST remain unchanged
 ```
 
 ### FR-012: Agent Fleet List View
@@ -407,12 +466,11 @@ Feature: Agent Fleet List View
     And agents in RETRY state MUST display with a warning indicator
     And each row MUST show Agent ID, IP, State, Last Attest, Policy, Failures, and Actions
 
-  Scenario: Paginated agent list
-    Given the Verifier manages 250 agents
-    And the page size is set to 25
-    When the user views the agent fleet list
-    Then the display MUST show "Showing 1-25 of 250 agents"
-    And pagination controls MUST allow navigating to page 2 through 10
+  Scenario: Verifier API unavailable for agent list
+    Given the dashboard backend cannot connect to the Verifier API
+    When the user navigates to the Agent Fleet view
+    Then the System MUST display cached agent data with a staleness indicator
+    And a banner MUST warn that the agent list may not reflect current state
 ```
 
 ### FR-013: Agent List Pagination
@@ -430,6 +488,13 @@ Feature: Agent List Pagination
     When the user clicks "Next Page"
     Then agents 26-50 MUST be displayed
     And the footer MUST show "Showing 26-50 of 250 agents | Page 2 of 10"
+
+  Scenario: Navigate beyond last page
+    Given the agent fleet contains 250 agents with a page size of 25
+    And the user is viewing page 10 (the last page)
+    When the user clicks "Next Page"
+    Then the "Next Page" button MUST be disabled
+    And page 10 MUST remain displayed
 ```
 
 ### FR-014: Advanced Multi-Criteria Agent Filtering
@@ -446,6 +511,12 @@ Feature: Advanced Agent Filtering
     When the user selects state filter "FAILED" and policy filter "production-v2"
     Then only agents in FAILED state assigned to "production-v2" MUST be displayed
     And agents in other states or with other policies MUST be hidden
+
+  Scenario: Filter returns no matching agents
+    Given the fleet contains 250 agents
+    When the user selects state filter "TERMINATED" and no agents are in that state
+    Then the agent list MUST display an empty state with message "No agents match the selected filters"
+    And a "Clear Filters" button MUST be available
 
   Scenario: Filter by failure count threshold
     Given the fleet contains agents with failure counts 0, 1, 3, 5
@@ -467,6 +538,12 @@ Feature: CIDR IP Filtering
     When the user enters IP filter "10.0.1.0/24"
     Then agents at 10.0.1.5 and 10.0.1.20 MUST be displayed
     And the agent at 10.0.2.15 MUST NOT be displayed
+
+  Scenario: Invalid CIDR in filter
+    Given the user enters "10.0.1.0/33" in the IP filter
+    When the filter is applied
+    Then the System MUST display a validation error indicating invalid CIDR notation
+    And the agent list MUST remain unfiltered
 ```
 
 ### FR-016: Bulk Operations
@@ -489,6 +566,13 @@ Feature: Bulk Agent Operations
     Given the user has the Viewer role
     When the user selects agents in the fleet list
     Then the Reactivate, Stop, Delete, and Reassign Policy buttons MUST be disabled
+
+  Scenario: Partial failure in bulk reactivation
+    Given the user has selected 5 agents for reactivation
+    When the System sends reactivation requests and 2 agents fail to reactivate
+    Then the System MUST display a summary: "3 succeeded, 2 failed"
+    And each failed agent MUST show the failure reason
+    And the 3 successful agents MUST update their state
 ```
 
 ### FR-017: Topology/Map View
@@ -528,6 +612,12 @@ Feature: Agent Detail View
     And the Attestation Statistics card MUST display total attestations, last successful time, and consecutive failures
     And the Cryptographic Details card MUST display hash algorithm, encryption, and signing algorithms
     And the Policy Assignment card MUST display assigned IMA and MB policies
+
+  Scenario: Agent not found
+    Given no agent with UUID "nonexistent-uuid" exists in the Verifier
+    When the user navigates to the agent detail page for "nonexistent-uuid"
+    Then the System MUST display a "404 — Agent Not Found" error page
+    And a link to return to the Agent Fleet view MUST be available
 ```
 
 ### FR-019: Agent Actions
@@ -550,6 +640,13 @@ Feature: Agent Detail Actions
     Given the user has the Operator role
     When the user views the agent detail page
     Then the "Delete" action button MUST be disabled or hidden
+
+  Scenario: Force attestation fails due to agent unreachable
+    Given the user has the Operator role
+    And agent "a1b2c3d4" is unreachable by the Verifier
+    When the user clicks "Force Attest"
+    Then the System MUST display an error "Agent unreachable — attestation could not be initiated"
+    And the agent state MUST remain unchanged
 ```
 
 ### FR-020: Agent Detail Six-Tab Deep-Dive
@@ -569,11 +666,43 @@ Feature: Agent Detail Tabs
     When the user searches for "/usr/bin/bash"
     Then only IMA entries for that file path MUST be shown
 
+  Scenario: View attestation timeline
+    Given the user is viewing agent "a1b2c3d4" detail page
+    When the user selects the "Timeline" tab
+    Then the attestation success/failure history MUST be displayed chronologically
+    And each entry MUST show timestamp, result (pass/fail), and failure reason if applicable
+    And the timeline MUST support zoomable time range navigation
+
+  Scenario: View PCR values with change history
+    Given the user is viewing agent "a1b2c3d4" detail page
+    When the user selects the "PCR Values" tab
+    Then the current PCR bank values MUST be displayed with expected vs. actual comparison
+    And changed PCR values MUST be highlighted with a "Changed" indicator
+
+  Scenario: View boot log with measured boot validation
+    Given the user is viewing agent "a1b2c3d4" detail page
+    When the user selects the "Boot Log" tab
+    Then the UEFI event log entries MUST be displayed
+    And each entry MUST show measured boot validation status (compliant/non-compliant)
+
+  Scenario: View agent certificates with expiry countdown
+    Given the user is viewing agent "a1b2c3d4" detail page
+    When the user selects the "Certificates" tab
+    Then EK, AK, IAK, IDevID, and mTLS certificate details MUST be displayed
+    And each certificate MUST show an expiry countdown (days remaining)
+
   Scenario: View raw JSON data
     Given the user is viewing agent "a1b2c3d4" detail page
     When the user selects the "Raw Data" tab
     Then the full agent JSON record from the Verifier API MUST be displayed
     And a "Copy" button MUST allow copying the JSON to clipboard
+
+  Scenario: Tab data unavailable due to API error
+    Given the user is viewing agent "a1b2c3d4" detail page
+    And the Verifier API returns an error for IMA log data
+    When the user selects the "IMA Log" tab
+    Then the tab MUST display an error message "Unable to load IMA log data"
+    And a "Retry" button MUST be available
 ```
 
 ### FR-021: PCR Values Monitoring
@@ -591,6 +720,11 @@ Feature: PCR Values Monitoring
     Then a table MUST display each PCR index, description, match status, and last changed date
     And PCR 10 (IMA measurements) MUST show "Match" with a recent timestamp
     And any PCR with a value differing from expected MUST show "Changed"
+
+  Scenario: PCR data unavailable for agent
+    Given agent "a1b2c3d4" has not yet completed an attestation cycle
+    When the user views the PCR Values tab
+    Then the tab MUST display "No PCR data available — awaiting first attestation"
 ```
 
 ### FR-022: PCR Change Detection
@@ -609,6 +743,11 @@ Feature: PCR Change Detection
     Then PCR 8 MUST display with a "Changed" indicator
     And the last changed date MUST be displayed
     And "Acknowledge" and "Investigate" action buttons MUST be available
+
+  Scenario: PCR change acknowledgement denied for Viewer
+    Given the user has the Viewer role
+    When the user views a PCR with a "Changed" indicator
+    Then the "Acknowledge" and "Investigate" buttons MUST be disabled or hidden
 ```
 
 ### FR-023: Cross-Tab Navigation
@@ -653,6 +792,12 @@ Feature: Attestation Analytics Overview
     Given multiple agents have different failure counts
     When the user views the Attestation Analytics
     Then a "Top Failing Agents" list MUST rank agents by failure count descending
+
+  Scenario: No attestation data available
+    Given no attestation data has been collected yet
+    When the user navigates to the Attestation Analytics view
+    Then the summary KPIs MUST display zeroes
+    And charts MUST display an empty state with message "No attestation data for the selected period"
 ```
 
 ### FR-025: Failure Categorization
@@ -670,6 +815,13 @@ Feature: Failure Categorization
     Then the failure MUST be categorized as "Quote Invalid"
     And the severity MUST be set to "Critical"
     And the common cause MUST indicate "TPM hardware issue, key mismatch"
+
+  Scenario: Failure with unknown type
+    Given agent "agent-099" fails with an unrecognized error code from the Verifier
+    When the failure is processed by the analytics engine
+    Then the failure MUST be categorized as "Unknown"
+    And the severity MUST default to "High"
+    And the raw error details MUST be preserved for manual review
 ```
 
 ### FR-026: Automatic Failure Correlation
@@ -697,21 +849,35 @@ Feature: Automatic Failure Correlation
     And the alert MUST indicate "warrants immediate investigation"
 ```
 
-### FR-027: Incident Grouping with Suggested Root Cause
+### FR-027: Root Cause Suggestion and Recommended Actions
 
-**Description:** The System MUST group correlated failures into a single incident. Each incident MUST include a suggested root cause, the triggering event (e.g., policy change), and a recommended action. The System MUST reduce N individual alerts to 1 correlated incident and automatically link to the triggering change.
+**Description:** For each correlated incident created by FR-026, the System MUST generate a suggested root cause by analyzing the triggering event (e.g., recent policy change, certificate expiry, infrastructure outage). The System MUST provide a recommended action (e.g., "rollback policy", "renew certificate", "investigate agent"). The System MUST automatically link the incident to the triggering change in the audit log.
 
 **Trace:** Attestation Analytics - Actionable Insights
 
 ```gherkin
-Feature: Incident Grouping
+Feature: Root Cause Suggestion
 
-  Scenario: Group policy-related failures
-    Given 15 agents fail with IMA policy violation after policy "production-v2" was updated
-    When the correlation engine processes the failures
-    Then a single incident MUST be created grouping all 15 failures
-    And the incident MUST link to the policy change event
-    And the recommended action MUST suggest reviewing the latest policy change
+  Scenario: Suggest root cause from policy change
+    Given a correlated incident exists grouping 15 IMA policy violation failures
+    And IMA policy "production-v2" was updated 3 minutes before the first failure
+    When the System analyzes the incident
+    Then the suggested root cause MUST reference the policy update to "production-v2"
+    And the recommended action MUST include "Rollback policy to previous version"
+    And the incident MUST link to the policy change audit log entry
+
+  Scenario: Suggest root cause from certificate expiry
+    Given a correlated incident exists grouping 5 mTLS handshake failures
+    And the Verifier's server certificate expired 10 minutes before the first failure
+    When the System analyzes the incident
+    Then the suggested root cause MUST reference the expired certificate
+    And the recommended action MUST include "Renew Verifier server certificate"
+
+  Scenario: No root cause identified
+    Given a correlated incident exists but no recent policy, certificate, or infrastructure change is found
+    When the System analyzes the incident
+    Then the suggested root cause MUST display "Unknown — manual investigation required"
+    And the recommended action MUST include "Escalate to security team"
 ```
 
 ### FR-028: One-Click Policy Rollback from Incident
@@ -729,6 +895,13 @@ Feature: Policy Rollback from Incident
     When the user clicks "Rollback Policy" on the incident
     Then the System SHOULD revert "production-v2" to its previous version
     And the rollback MUST be recorded in the audit log
+
+  Scenario: Rollback subject to two-person rule
+    Given an incident suggests policy rollback
+    And the two-person rule is enforced for policy changes
+    When Admin A clicks "Rollback Policy"
+    Then the rollback MUST be submitted as a draft requiring approval from Admin B
+    And the System MUST NOT apply the rollback without a second approver
 ```
 
 ### FR-029: Push Mode (v3 API) Attestation Analytics
@@ -752,6 +925,12 @@ Feature: Push Mode Analytics
     And the expected submission interval is 2 minutes
     When the System evaluates push mode agent activity
     Then the System MUST raise an alert indicating "agent not submitting attestations"
+
+  Scenario: Push mode analytics unavailable in pull-only deployment
+    Given the deployment operates exclusively in pull mode (v2 API)
+    When the user navigates to the Push Mode Analytics view
+    Then the System MUST display "Push mode is not enabled in this deployment"
+    And no push-specific metrics MUST be shown
 ```
 
 ### FR-030: Verification Pipeline Visualization
@@ -769,6 +948,11 @@ Feature: Verification Pipeline Visualization
     Then stages "Receive", "Validate TPM Quote", and "Check PCR Values" MUST show pass indicators
     And stage "Verify IMA Log" MUST show a fail indicator
     And subsequent stages MUST be shown as not reached
+
+  Scenario: Pipeline data unavailable for agent
+    Given agent "agent-042" has not yet completed any attestation cycle
+    When the user views the verification pipeline
+    Then the System MUST display "No pipeline data available — awaiting first attestation"
 ```
 
 ### FR-031: Per-Stage Verification Metrics
@@ -786,6 +970,12 @@ Feature: Per-Stage Verification Metrics
     Then IMA stage MUST show entries processed count
     And IMA stage MUST show allowlist hit/miss ratio
     And IMA stage MUST show average processing time
+
+  Scenario: Metrics unavailable for new deployment
+    Given the System has just been deployed and no attestations have been processed
+    When the user views verification stage metrics
+    Then all metrics MUST display "N/A" or zero values
+    And a message MUST indicate "Insufficient data — metrics will populate after attestation activity"
 ```
 
 ### FR-032: IMA Quote Progress Tracking
@@ -804,6 +994,12 @@ Feature: IMA Quote Progress Tracking
     When the System evaluates IMA progress for "agent-042"
     Then the System MUST raise an alert for IMA verification lag
     And the alert MUST display the gap size (1,500 entries)
+
+  Scenario: IMA progress tracking disabled for push-mode agent
+    Given agent "agent-042" operates in push mode (v3 API)
+    And push mode does not expose incremental IMA progress
+    When the user views IMA quote progress for "agent-042"
+    Then the System MUST display "IMA progress tracking not available for push mode agents"
 ```
 
 ### FR-033: IMA Policy List View
@@ -825,6 +1021,12 @@ Feature: IMA Policy List View
     Given policies named "production-v2", "staging-v3", "minimal" exist
     When the user types "prod" in the policy search bar
     Then only "production-v2" MUST be displayed
+
+  Scenario: No policies configured
+    Given the Verifier has zero IMA policies configured
+    When the user navigates to the Policy Management view
+    Then the list MUST display an empty state with message "No policies configured"
+    And a "New Policy" button MUST be prominently available
 ```
 
 ### FR-034: Policy CRUD with Editor
@@ -848,6 +1050,13 @@ Feature: Policy Editor
     When the user clicks "Save"
     Then the System MUST display a validation error
     And the policy MUST NOT be saved until errors are corrected
+
+  Scenario: Concurrent edit conflict
+    Given Admin A is editing policy "production-v2" at version 3
+    And Admin B saves a change to "production-v2" creating version 4
+    When Admin A attempts to save their changes
+    Then the System MUST reject the save with a conflict error
+    And Admin A MUST be prompted to reload the latest version before editing
 ```
 
 ### FR-035: Policy Versioning
@@ -872,6 +1081,12 @@ Feature: Policy Versioning
     When the user selects "Rollback to version 2"
     Then the policy MUST revert to version 2 content
     And a new version 4 MUST be created reflecting the rollback
+
+  Scenario: Rollback denied for non-Admin
+    Given the user has the Operator role
+    And policy "production-v2" is at version 3
+    When the user attempts to select "Rollback to version 2"
+    Then the rollback action MUST be disabled or hidden
 ```
 
 ### FR-036: Measured Boot Policy Management
@@ -888,6 +1103,12 @@ Feature: Measured Boot Policy Management
     When the user uploads a reference UEFI event log
     Then the System MUST generate a measured boot policy from the log
     And the user MUST be able to edit and save the generated policy
+
+  Scenario: Invalid boot log upload rejected
+    Given the user has the Admin role
+    When the user uploads a file that is not a valid UEFI event log
+    Then the System MUST display a validation error "Invalid boot log format"
+    And no policy MUST be generated
 ```
 
 ### FR-037: Policy Assignment Matrix
@@ -909,6 +1130,12 @@ Feature: Policy Assignment Matrix
     When the admin selects all 15 agents and assigns them to "staging-v3"
     Then all 15 agents MUST be reassigned to "staging-v3"
     And the assignment change MUST be recorded in the audit log
+
+  Scenario: Batch reassignment partial failure
+    Given 15 agents are assigned to policy "staging-v2"
+    When the admin reassigns all 15 agents to "staging-v3" and 3 agents fail to update
+    Then the System MUST display a summary: "12 succeeded, 3 failed"
+    And each failed agent MUST show the failure reason
 ```
 
 ### FR-038: Pre-Update Policy Impact Analysis
@@ -928,11 +1155,17 @@ Feature: Policy Impact Analysis
     And the System MUST display the number of affected agents
     And the System MUST display the number of agents that will fail
     And a recommendation MUST be provided based on the analysis
+
+  Scenario: Impact analysis with Verifier API unavailable
+    Given the Verifier API is unreachable
+    When the administrator requests impact analysis for a proposed change
+    Then the System MUST display an error "Unable to perform impact analysis — Verifier API unavailable"
+    And the "Submit for Approval" action MUST be disabled
 ```
 
 ### FR-039: Two-Person Rule for Policy Changes
 
-**Description:** The System MUST enforce a two-person approval workflow for policy changes. Admin A drafts the policy change, the System runs impact analysis automatically, and Admin B (a different user) reviews and approves. The System MUST support configurable quorum (e.g., 2-of-3, 3-of-5). The approver MUST NOT be the same user as the drafter. Approval requests MUST have a time-limited window (default: 24 hours) after which they expire.
+**Description:** The System MUST enforce a two-person approval workflow for policy changes. Admin A drafts the policy change, the System runs impact analysis automatically, and Admin B (a different user) reviews and approves. The System MUST support configurable quorum (e.g., 2-of-3, 3-of-5). The approver MUST NOT be the same user as the drafter. Approval requests MUST have a configurable time-limited window (default: 24 hours) after which they expire and revert to Draft state.
 
 **Trace:** Policy Management - Two-Person Rule
 
@@ -959,24 +1192,19 @@ Feature: Two-Person Policy Approval
     When the approval is recorded
     Then the System MUST automatically push the policy to the Verifier
     And the audit log MUST record both the drafter and approver identities
-```
 
-### FR-040: Time-Limited Approval Window
+  Scenario: Configure approval window duration
+    Given the Admin configures the approval window to 48 hours
+    When Admin A submits a policy change for review
+    Then the approval window MUST expire after 48 hours instead of the default 24 hours
+    And the pending change MUST display the configured expiry time
 
-**Description:** The System MUST enforce a configurable time-limited approval window for policy changes. The default window MUST be 24 hours. Policy changes not approved within the window MUST automatically expire and revert to Draft state.
-
-**Trace:** Policy Management - Two-Person Rule
-
-```gherkin
-Feature: Approval Window Expiry
-
-  Scenario: Policy approval expires after 24 hours
-    Given Admin A submitted a policy change for review at 10:00
-    And no approver acts within 24 hours
-    When the 24-hour window elapses
-    Then the policy change MUST automatically expire
-    And the status MUST revert to "Draft"
-    And an audit log entry MUST record the expiration
+  Scenario: Single admin cannot approve policy changes
+    Given there is only one Admin user in the system
+    When Admin A drafts a policy change
+    Then the System MUST allow the draft to be submitted for approval
+    And the System MUST display a warning that no other approver is available
+    And the policy change MUST remain in "Pending Approval" until a second Admin is created
 ```
 
 ### FR-041: Change Management Integration
@@ -994,6 +1222,13 @@ Feature: Change Management Integration
     When the change is submitted for approval
     Then a ServiceNow Change Request MUST be auto-created
     And the policy push MUST be blocked until the CR is approved in ServiceNow
+
+  Scenario: ServiceNow integration unavailable
+    Given ServiceNow integration is enabled
+    And the ServiceNow API endpoint is unreachable
+    When the change is submitted for approval
+    Then the System MUST display a warning "ServiceNow unreachable — CR not created"
+    And the policy change MUST remain in draft state until the CR can be created
 ```
 
 ### FR-042: Security Audit Event Log
@@ -1016,6 +1251,11 @@ Feature: Security Audit Event Log
     When the verifier reports the failure
     Then a CRITICAL audit event MUST be logged
     And the event MUST include the source (verifier ID), action (VERIFY_EVIDENCE), agent ID, and failure reason
+
+  Scenario: Audit log search returns no results
+    Given the audit log contains events from the past 30 days
+    When the user filters by severity "CRITICAL" and date range with no matching events
+    Then the log view MUST display an empty state with message "No events match the selected filters"
 ```
 
 ### FR-043: Authorization Tracking
@@ -1033,6 +1273,12 @@ Feature: Authorization Tracking
     Then the audit log MUST contain action "UPDATE" in category "Policy Management"
     And the identity type MUST be "admin (mTLS)"
     And the actor MUST be "admin@example.com"
+
+  Scenario: Authorization tracking for denied action
+    Given user "viewer@example.com" with Viewer role attempts to delete an agent
+    When the authorization decision is recorded
+    Then the audit log MUST contain action "DELETE" with result "DENIED"
+    And the identity MUST be "viewer@example.com"
 ```
 
 ### FR-044: Identity Verification Event Monitoring
@@ -1055,6 +1301,12 @@ Feature: Identity Verification Events
     When agent "agent-042" re-registers from IP 10.0.2.10
     Then the System MUST raise a WARNING alert
     And the alert MUST indicate the IP change from 10.0.1.5 to 10.0.2.10
+
+  Scenario: Agent registration with invalid EK certificate
+    Given a new agent attempts to register with an EK certificate not in the trusted CA list
+    When the registration event is processed
+    Then the audit log MUST record action "REGISTER_AGENT" with result "REJECTED"
+    And a CRITICAL alert MUST be raised indicating "untrusted EK certificate"
 ```
 
 ### FR-045: Anomaly Detection
@@ -1071,6 +1323,12 @@ Feature: Anomaly Detection
     When admin "admin@example.com" deletes an agent at 03:00
     Then the System SHOULD flag the action as an off-hours anomaly
     And a WARNING alert SHOULD be raised for security review
+
+  Scenario: Multiple failed authorization attempts
+    Given user "unknown@example.com" attempts 5 failed authorization requests in 1 minute
+    When the System evaluates authorization patterns
+    Then the System SHOULD flag the activity as a potential brute-force attempt
+    And a CRITICAL alert SHOULD be raised for immediate investigation
 ```
 
 ### FR-046: Revocation Notification Channel Monitoring
@@ -1089,6 +1347,12 @@ Feature: Revocation Channel Monitoring
     Then the System MUST display "failed (retry 1)" for the webhook channel
     And the System MUST retry delivery according to the configured retry policy
 
+  Scenario: All revocation channels unavailable
+    Given all configured revocation notification channels are in a failed state
+    When a new revocation event occurs
+    Then the System MUST raise a CRITICAL alert "All notification channels unavailable"
+    And the revocation event MUST be queued for delivery once a channel recovers
+
   Scenario: Monitor ZeroMQ connection state
     Given ZeroMQ is configured on port 8992
     When the ZeroMQ connection is active
@@ -1104,11 +1368,15 @@ Feature: Revocation Channel Monitoring
 ```gherkin
 Feature: Alert Lifecycle Workflow
 
-  Scenario: Acknowledge and investigate an alert
+  Scenario: Acknowledge a critical alert
     Given a new critical alert exists for agent "agent-042"
     And the user has the Operator role
     When the operator clicks "Acknowledge" on the alert
     Then the alert state MUST change to "Acknowledged"
+
+  Scenario: Move acknowledged alert to investigation
+    Given an acknowledged alert exists for agent "agent-042"
+    And the user has the Operator role
     When the operator assigns the alert and clicks "Investigate"
     Then the alert state MUST change to "Under Investigation"
 
@@ -1134,6 +1402,13 @@ Feature: Alert Auto-Escalation
     When the SLA timeout is exceeded
     Then the System SHOULD escalate the alert to the next level in the escalation chain
     And a notification SHOULD be sent to the escalation recipient
+
+  Scenario: Escalation chain exhausted
+    Given all levels in the escalation chain have been notified
+    And the alert remains unacknowledged
+    When the System attempts further escalation
+    Then the System SHOULD raise a CRITICAL meta-alert "Escalation chain exhausted — alert unresolved"
+    And the audit log MUST record all escalation attempts
 ```
 
 ### FR-049: Alert Auto-Resolve
@@ -1150,6 +1425,12 @@ Feature: Alert Auto-Resolve
     When agent "agent-067" completes a successful attestation
     Then the System SHOULD change the alert state to "Resolved"
     And the resolution MUST be marked as "auto-resolved"
+
+  Scenario: Auto-resolve suppressed for manually escalated alert
+    Given an alert has been manually escalated to the security team
+    When the underlying condition clears
+    Then the System MUST NOT auto-resolve the alert
+    And the alert MUST remain in its current state until manually resolved
 ```
 
 ### FR-050: Unified Certificate View
@@ -1167,6 +1448,11 @@ Feature: Unified Certificate View
     When the user navigates to the Certificate Management view
     Then all certificate types MUST be listed in a unified view
     And each certificate MUST show its type, associated entity, and validity status
+
+  Scenario: Agent with missing certificate data
+    Given agent "agent-099" has no EK certificate recorded in the Registrar
+    When the user views the Certificate Management view
+    Then the entry for "agent-099" MUST display "EK Certificate: Not Available"
 ```
 
 ### FR-051: Certificate Expiry Dashboard
@@ -1188,6 +1474,12 @@ Feature: Certificate Expiry Dashboard
     When the System evaluates certificate validity
     Then a critical alert MUST be raised for agent "agent-015"
     And the alert MUST indicate the certificate type and expiry date
+
+  Scenario: No certificates expiring
+    Given all certificates in the fleet are valid with more than 90 days remaining
+    When the user navigates to the Certificate Expiry Dashboard
+    Then the summary MUST show "Expired: 0", "Expiring <30d: 0"
+    And the timeline MUST display no upcoming expirations
 ```
 
 ### FR-052: Certificate Detail Inspection
@@ -1205,6 +1497,12 @@ Feature: Certificate Detail Inspection
     Then the Subject DN, Issuer DN, serial number, and validity period MUST be displayed
     And the certificate chain visualization MUST show the chain to the root CA
     And PEM export MUST be available
+
+  Scenario: Certificate chain validation failure
+    Given agent "a1b2c3d4" has an EK certificate issued by an unknown CA
+    When the System validates the EK certificate chain
+    Then the chain validation MUST display "INVALID — issuer not in trusted CA list"
+    And a WARNING MUST be displayed on the certificate detail view
 
   Scenario: Validate EK certificate chain
     Given the TPM vendor CA certificates are pre-loaded
@@ -1233,6 +1531,12 @@ Feature: Automated Certificate Renewal
     When the System detects the failure
     Then the System SHOULD rollback to the previous certificate
     And an alert MUST be raised indicating renewal failure
+
+  Scenario: Auto-renewal not available for vendor certificates
+    Given agent "agent-015" has an EK certificate issued by a TPM vendor
+    When the System evaluates the certificate for auto-renewal
+    Then the System MUST skip auto-renewal for vendor-issued certificates
+    And the certificate expiry alert MUST indicate "manual renewal required"
 ```
 
 ### FR-054: Pull Mode Attestation Monitoring
@@ -1271,6 +1575,11 @@ Feature: Push Mode Monitoring
     Then a WARNING alert MUST be raised
     And the alert MUST indicate the agent ID and the limit threshold
 
+  Scenario: Push mode monitoring in pull-only deployment
+    Given the deployment operates exclusively in pull mode (v2 API)
+    When the user navigates to push mode monitoring
+    Then the System MUST display "Push mode is not enabled in this deployment"
+
   Scenario: Track session token lifecycle
     Given push mode sessions are active
     When the user views push mode monitoring
@@ -1297,6 +1606,12 @@ Feature: Mixed Mode Unified Views
     Given the dashboard detects agents operating in push mode
     When the user navigates to the Attestation Analytics view
     Then a mode toggle MUST allow switching between unified, pull-only, and push-only views
+
+  Scenario: Single-mode deployment hides mode toggle
+    Given the deployment operates exclusively in pull mode (v2 API)
+    When the user views the Fleet Overview Dashboard
+    Then the mode toggle MUST NOT be displayed
+    And all views MUST default to pull-mode data
 ```
 
 ### FR-057: Backend Connectivity Status Dashboard
@@ -1320,6 +1635,12 @@ Feature: Backend Connectivity Status
     When the TSA connection times out
     Then the TSA entry MUST show status "TIMEOUT" with a red indicator
     And a WARNING alert MUST be raised indicating TSA unavailability
+
+  Scenario: All backend services healthy
+    Given all configured backend services are operational
+    When the user navigates to the Integration Status view
+    Then all services MUST show green health indicators
+    And no alerts MUST be displayed for backend connectivity
 ```
 
 ### FR-058: Durable Attestation Backend Monitoring
@@ -1342,6 +1663,12 @@ Feature: Durable Attestation Backend Monitoring
     When the Redis connection is lost
     Then the System MUST display "disconnected" for the Redis backend
     And a CRITICAL alert MUST be raised indicating "attestation data backend unavailable"
+
+  Scenario: Durable backend not configured
+    Given no Rekor transparency log is configured for the deployment
+    When the user views the Durable Attestation Backend panel
+    Then the Rekor entry MUST display "Not Configured"
+    And no alerts MUST be raised for Rekor status
 ```
 
 ### FR-059: Compliance Framework Mapping Reports
@@ -1365,6 +1692,12 @@ Feature: Compliance Framework Mapping
     When the user selects the FedRAMP compliance report
     Then control CA-7 MUST map to real-time attestation success rate
     And control SI-7 MUST map to IMA policy enforcement reports
+
+  Scenario: Compliance gap identified
+    Given IMA attestation is not enabled for 10 agents in the fleet
+    When the user views the PCI DSS 4.0 compliance report
+    Then Req 11.5 coverage status MUST display "Partial" or "Gap"
+    And the gap detail MUST list the 10 agents without IMA attestation
 ```
 
 ### FR-060: One-Click Compliance Report Export
@@ -1388,6 +1721,11 @@ Feature: One-Click Compliance Report Export
     When the user exports the compliance evidence package
     Then the export MUST include all audit log entries within the date range
     And the export MUST include attestation pass/fail summaries per agent for the period
+
+  Scenario: Compliance report export denied for Viewer
+    Given the user has the Viewer role
+    When the user attempts to export a compliance report
+    Then the Export button MUST be disabled or hidden
 ```
 
 ### FR-061: Tamper-Evident Hash-Chained Audit Logging
@@ -1399,10 +1737,11 @@ Feature: One-Click Compliance Report Export
 ```gherkin
 Feature: Tamper-Evident Audit Logging
 
-  Scenario: Detect audit log tampering
+  Scenario: Detect hash chain integrity violation
     Given the audit log contains 1,000 hash-chained entries
-    When an attacker modifies entry #500
-    Then the hash chain verification MUST detect the tamper at entry #501
+    And entry #500 has been modified such that its hash no longer matches entry #501's previous-hash field
+    When the System runs periodic hash chain verification
+    Then the verification MUST report a chain break at entry #501
     And the System MUST raise a CRITICAL alert indicating audit log integrity violation
 
   Scenario: Audit log entry structure
@@ -1435,6 +1774,12 @@ Feature: Incident Response Ticketing Integration
     When the ServiceNow incident is resolved externally
     Then the dashboard alert status SHOULD sync to "Resolved"
     And the resolution source MUST be recorded as "ServiceNow INC0012345"
+
+  Scenario: Ticketing integration not configured
+    Given no incident response integration is configured
+    When an attestation failure triggers the incident response workflow
+    Then the System MUST create a local incident record only
+    And the integration panel MUST display "No ticketing integrations configured"
 ```
 
 ### FR-063: SIEM Integration
@@ -1457,6 +1802,12 @@ Feature: SIEM Integration
     When Prometheus scrapes the /metrics endpoint
     Then the endpoint MUST expose attestation success rate, alert counts, agent fleet size, and API response times
     And each metric MUST include appropriate labels (agent_id, severity, mode)
+
+  Scenario: SIEM endpoint unreachable
+    Given Syslog integration is configured with endpoint "siem.example.com:514"
+    When the endpoint becomes unreachable
+    Then the System MUST log the delivery failure and retry according to the configured policy
+    And a WARNING alert MUST be raised indicating "SIEM endpoint unreachable"
 ```
 
 ### FR-064: Verifier Cluster Performance Monitoring
@@ -1479,6 +1830,13 @@ Feature: Verifier Cluster Performance Monitoring
     When the System evaluates verifier health
     Then Verifier-02 MUST display a yellow "HIGH LOAD" indicator
     And a WARNING alert MUST be raised indicating the affected node
+
+  Scenario: Verifier node unreachable
+    Given the deployment has two verifier nodes
+    And Verifier-02 is unreachable
+    When the System polls verifier health
+    Then Verifier-02 MUST display a red "DOWN" indicator
+    And a CRITICAL alert MUST be raised indicating "Verifier-02 unreachable"
 ```
 
 ### FR-065: Database Connection Pool Monitoring
@@ -1502,6 +1860,12 @@ Feature: Database Connection Pool Monitoring
     When a new connection request is queued
     Then the System MUST raise a CRITICAL alert indicating "database pool exhausted"
     And the connection wait time MUST be displayed
+
+  Scenario: Slow query detected
+    Given a database query takes 250ms (threshold: 100ms)
+    When the System monitors query performance
+    Then the slow query MUST be logged with query type and duration
+    And the slow query count metric MUST increment
 ```
 
 ### FR-066: API Response Time Tracking
@@ -1525,6 +1889,12 @@ Feature: API Response Time Tracking
     When the System evaluates API performance
     Then the PATCH /attestations/:idx p99 value MUST display in red
     And a WARNING alert MUST be raised indicating API latency degradation
+
+  Scenario: API endpoint returns errors
+    Given the POST /attestations endpoint returns HTTP 500 errors
+    When the System tracks API response codes
+    Then the error rate MUST be displayed alongside response times
+    And a CRITICAL alert MUST be raised if the error rate exceeds the configured threshold
 ```
 
 ### FR-067: Live Configuration View with Drift Detection
@@ -1543,6 +1913,12 @@ Feature: Configuration Drift Detection
     Then "num_workers" MUST display with a "Modified" indicator
     And "mode" MUST display with a "Modified" indicator
     And settings at their default values MUST display with a "Default" indicator
+
+  Scenario: Configuration drift detected
+    Given the verifier's "quote_interval" was set to 30s in the baseline
+    When the running configuration shows "quote_interval" changed to 60s
+    Then the System MUST raise a WARNING alert "Configuration drift detected"
+    And the changed setting MUST display both the baseline and current values
 ```
 
 ### FR-068: Capacity Planning Projections
@@ -1567,6 +1943,12 @@ Feature: Capacity Planning Projections
     When the user views storage projections
     Then the System SHOULD project the date when storage will reach 80% capacity
     And a WARNING SHOULD be raised if the projected date is within 30 days
+
+  Scenario: Insufficient data for projections
+    Given the System has been running for less than 24 hours
+    When the user views the Capacity Planning panel
+    Then the System SHOULD display "Insufficient historical data for projections"
+    And no projected dates SHOULD be shown
 ```
 
 ### FR-069: Agent State Machine Visualization
@@ -1591,6 +1973,12 @@ Feature: Agent State Machine Visualization
     When the user views the push mode state visualization
     Then the 3-stage flow MUST be displayed: capabilities → challenge → evidence
     And each stage MUST show the current count of agents at that stage
+
+  Scenario: No agents in a specific state
+    Given no agents are in FAILED state
+    When the user views the Agent State Machine visualization
+    Then the FAILED state node MUST show count "0"
+    And the FAILED state MUST still be visible in the diagram but with a neutral indicator
 ```
 
 ### FR-070: API Version Distribution Visualization
@@ -1614,11 +2002,60 @@ Feature: API Version Distribution Visualization
     When the user views the API Version Distribution
     Then agents on v2.0 MUST be highlighted as running an older API version
     And the System SHOULD display a recommendation to upgrade
+
+  Scenario: Unknown API version reported
+    Given an agent reports an API version not recognized by the System
+    When the user views the API Version Distribution
+    Then the unknown version MUST be displayed in a separate "Unknown" category
+    And a WARNING MUST be raised indicating an unrecognized API version
 ```
 
 ---
 
 ## 4. Non-Functional Requirements Detail
+
+### NFR-001: KPI Data Refresh Latency
+
+**Description:** The System MUST refresh KPI data within 30 seconds of a state change occurring in the Keylime backend. The default refresh interval MUST be configurable.
+
+**Trace:** Dashboard - Key Performance Indicators
+
+```gherkin
+Feature: KPI Data Refresh Latency
+
+  Scenario: KPI data refreshes within threshold
+    Given auto-refresh is enabled with the default 30-second interval
+    When an agent state change occurs in the Verifier
+    Then the dashboard KPI data MUST reflect the change within 30 seconds
+
+  Scenario: KPI refresh exceeds threshold
+    Given auto-refresh is enabled
+    When KPI data has not been updated for more than 30 seconds after a known state change
+    Then the System MUST display a staleness warning on affected KPIs
+```
+
+### NFR-002: Dual API Version Support
+
+**Description:** The System MUST support Keylime API v2 (pull mode) and v3 (push mode) simultaneously. The backend MUST detect the API version per agent and adapt its data collection strategy accordingly.
+
+**Trace:** Keylime - Data Model Overview
+
+```gherkin
+Feature: Dual API Version Support
+
+  Scenario: Simultaneous v2 and v3 agent handling
+    Given the fleet contains agents using API v2 and agents using API v3
+    When the System ingests data from the Verifier
+    Then v2 agents MUST be polled using GET endpoints
+    And v3 agents MUST receive push-mode events
+    And both agent types MUST appear in the unified fleet view
+
+  Scenario: Unsupported API version rejected
+    Given an agent reports an API version not supported by the System
+    When the System attempts to ingest data from that agent
+    Then the System MUST log a WARNING indicating "unsupported API version"
+    And the agent MUST be displayed with a "version incompatible" status
+```
 
 ### NFR-003: Non-Invasive Architecture
 
@@ -1626,11 +2063,87 @@ Feature: API Version Distribution Visualization
 
 **Trace:** Technical Architecture - System Design
 
+```gherkin
+Feature: Non-Invasive Architecture
+
+  Scenario: System operates without Keylime modifications
+    Given the Keylime Verifier and Registrar are running with default configuration
+    When the dashboard backend starts and connects via mTLS
+    Then the System MUST retrieve all data exclusively through public REST API endpoints
+    And no direct database connections MUST be established to Keylime databases
+
+  Scenario: System degrades when API is unavailable
+    Given the Keylime Verifier API is unreachable
+    When the System attempts to fetch data
+    Then the System MUST display cached data with staleness indicators
+    And the System MUST NOT fall back to direct database access
+```
+
+### NFR-004: Single Page Application Frontend
+
+**Description:** The frontend MUST render as a Single Page Application with client-side routing. Initial page load MUST complete within 3 seconds on a 10 Mbps connection. The UI framework MUST support component-based architecture with type safety.
+
+**Trace:** Technical Architecture - Data Flow
+
+```gherkin
+Feature: SPA Frontend Performance
+
+  Scenario: Initial page load within performance budget
+    Given the user accesses the dashboard for the first time
+    When the browser loads the application on a 10 Mbps connection
+    Then the initial page render MUST complete within 3 seconds
+    And subsequent navigation between views MUST NOT trigger full page reloads
+
+  Scenario: Client-side routing
+    Given the user is viewing the Fleet Overview Dashboard
+    When the user clicks "Agents" in the sidebar
+    Then the browser URL MUST update without a full page reload
+    And the Agent Fleet view MUST render via client-side routing
+```
+
+### NFR-005: Async Backend Performance
+
+**Description:** The backend MUST support 10,000 concurrent WebSocket connections with less than 100ms p99 latency on a single node. The backend MUST use asynchronous I/O for all network operations.
+
+**Trace:** Technical Architecture - Why Rust
+
+```gherkin
+Feature: Backend Performance
+
+  Scenario: Handle 10,000 concurrent WebSocket connections
+    Given the backend is running on a single node
+    When 10,000 clients establish WebSocket connections simultaneously
+    Then all connections MUST be maintained without connection drops
+    And p99 message delivery latency MUST remain below 100ms
+
+  Scenario: Backend handles API requests under load
+    Given 500 concurrent HTTP requests are sent to the REST API
+    When the backend processes the requests
+    Then p99 response time MUST remain below 200ms
+    And no requests MUST time out
+```
+
 ### NFR-006: Event-Driven Ingestion
 
 **Description:** The System MUST use event-driven ingestion as the primary data path. The System MUST consume ZeroMQ revocation events from the Verifier. The System SHOULD propose upstream state-change webhook/AMQP emit. A message broker (RabbitMQ/Kafka) SHOULD decouple load. The System MUST use event sequence numbers to detect gaps. A periodic reconciliation sweep MUST run every 5 minutes.
 
 **Trace:** Technical Architecture - Event-Driven Ingestion; Scalability - Ingestion Model Comparison
+
+```gherkin
+Feature: Event-Driven Ingestion
+
+  Scenario: Consume ZeroMQ revocation event
+    Given the System is subscribed to the Verifier's ZeroMQ revocation channel
+    When the Verifier publishes a revocation event for agent "agent-042"
+    Then the System MUST process the event and update the agent's status
+    And the event sequence number MUST be recorded
+
+  Scenario: Detect event sequence gap
+    Given the System has processed events up to sequence number 100
+    When the next received event has sequence number 103
+    Then the System MUST detect a gap of 2 missing events
+    And the System MUST trigger an immediate reconciliation for the missing events
+```
 
 ### NFR-007: Polling Fallback with Backpressure
 
@@ -1638,11 +2151,132 @@ Feature: API Version Distribution Visualization
 
 **Trace:** Scalability - Ingestion Model Comparison; Technical Architecture - Event-Driven Ingestion
 
+```gherkin
+Feature: Polling Fallback with Backpressure
+
+  Scenario: Adaptive polling interval increase under load
+    Given the System is operating in polling mode
+    And the p95 API latency exceeds 500ms
+    When the next polling cycle is scheduled
+    Then the polling interval MUST be doubled from its current value
+    And the System MUST alert the operator that backpressure is active
+
+  Scenario: Pause detail polling under extreme latency
+    Given the p95 API latency exceeds 2 seconds
+    When the System evaluates polling strategy
+    Then detail polling MUST be paused entirely
+    And only list-level polling MUST continue
+    And a WARNING alert MUST indicate "detail polling paused due to high latency"
+```
+
+### NFR-008: Event-Driven Scalability
+
+**Description:** The System SHOULD scale to 100,000+ agents under event-driven ingestion mode. Performance MUST NOT degrade linearly with agent count when using event-driven ingestion.
+
+**Trace:** Scalability - Ingestion Model Comparison
+
+```gherkin
+Feature: Event-Driven Scalability
+
+  Scenario: Dashboard responsive at 100K agents
+    Given the fleet contains 100,000 agents in event-driven mode
+    When the user navigates to the Fleet Overview Dashboard
+    Then the KPI data SHOULD render within 5 seconds
+    And the agent list SHOULD paginate without blocking the UI
+```
+
+### NFR-009: Polling Fallback Scalability
+
+**Description:** The System MUST support approximately 1,000 agents under polling fallback mode without exceeding acceptable API load on the Keylime Verifier.
+
+**Trace:** Scalability - Ingestion Model Comparison
+
+```gherkin
+Feature: Polling Fallback Scalability
+
+  Scenario: Polling mode at 1,000 agents
+    Given the fleet contains 1,000 agents in polling mode
+    When the System executes a polling cycle
+    Then all agent states MUST be refreshed within 60 seconds
+    And the API load on the Verifier MUST NOT exceed 50 requests per second
+```
+
+### NFR-010: Active/Passive High Availability
+
+**Description:** The System MUST support Active/Passive HA deployment with less than 30 seconds Recovery Time Objective (RTO) and zero Recovery Point Objective (RPO) for committed transactions.
+
+**Trace:** High Availability - Architecture
+
+```gherkin
+Feature: Active/Passive HA
+
+  Scenario: Failover to standby node
+    Given the System is deployed in Active/Passive HA mode
+    When the active node becomes unavailable
+    Then the standby node MUST assume the active role within 30 seconds
+    And no committed data MUST be lost (0 RPO)
+    And WebSocket clients MUST reconnect to the new active node
+```
+
+### NFR-011: Active/Active High Availability
+
+**Description:** The System SHOULD support Active/Active HA deployment for environments with 5,000+ agents, distributing load across multiple backend nodes.
+
+**Trace:** High Availability - Architecture
+
+```gherkin
+Feature: Active/Active HA
+
+  Scenario: Load distribution across nodes
+    Given the System is deployed in Active/Active mode with 2 backend nodes
+    When 5,000 agents are being monitored
+    Then each node SHOULD handle approximately half of the agent data ingestion
+    And failure of one node SHOULD result in the surviving node handling the full load
+```
+
 ### NFR-012: Air-Gapped Deployment
 
 **Description:** The System MUST be fully self-contained with no runtime internet access required. All frontend assets MUST be bundled (no CDN). The Rust backend MUST compile to a single binary with no runtime dependencies. Fonts and icons MUST be embedded. Pre-built container images MUST include all layers. Offline EK certificate validation MUST be supported via pre-loaded TPM vendor CA certificates. Update packages MUST be signed (GPG) with integrity verification and SBOM included.
 
 **Trace:** Deployment - Offline & Air-Gapped
+
+```gherkin
+Feature: Air-Gapped Deployment
+
+  Scenario: No external network requests at runtime
+    Given the System is deployed in an air-gapped environment
+    When the System starts and operates normally
+    Then the System MUST NOT make any outbound network requests to the internet
+    And all UI assets (fonts, icons, scripts) MUST load from bundled resources
+
+  Scenario: Offline EK certificate validation
+    Given the TPM vendor CA certificates are pre-loaded in the System
+    When an agent registers with an EK certificate
+    Then the System MUST validate the EK certificate against the pre-loaded CA bundle
+    And no network request to external CRLs or OCSP responders MUST be made
+```
+
+### NFR-013: Self-Contained Packaging
+
+**Description:** The System MUST be packaged as a self-contained application. The backend MUST compile to a single binary. The frontend MUST be bundled with all assets. No CDN or external dependency downloads MUST be required at runtime.
+
+**Trace:** Deployment - Offline & Air-Gapped
+
+```gherkin
+Feature: Self-Contained Packaging
+
+  Scenario: Single binary backend deployment
+    Given the backend binary is deployed to a server
+    When the binary is executed
+    Then the backend MUST start without requiring additional runtime downloads
+    And all embedded assets MUST be served from the binary
+
+  Scenario: Frontend loads without CDN
+    Given the user accesses the dashboard in an environment with no internet
+    When the browser loads the application
+    Then all JavaScript, CSS, fonts, and icons MUST load from the backend server
+    And no requests to external CDNs MUST be attempted
+```
 
 ### NFR-014: Accessibility
 
@@ -1650,15 +2284,282 @@ Feature: API Version Distribution Visualization
 
 **Trace:** Deployment - Offline & Air-Gapped
 
+```gherkin
+Feature: WCAG 2.1 Level AA Accessibility
+
+  Scenario: Keyboard navigation through dashboard
+    Given the user navigates the dashboard using only the keyboard
+    When the user presses Tab to move between interactive elements
+    Then every interactive element MUST receive visible focus
+    And the user MUST be able to activate any control using Enter or Space
+
+  Scenario: Screen reader announces dashboard elements
+    Given a screen reader is active
+    When the user navigates to the Fleet Overview Dashboard
+    Then all KPI values MUST have ARIA labels describing the metric name and value
+    And all interactive elements MUST have descriptive ARIA labels
+```
+
+### NFR-015: Multiple Deployment Options
+
+**Description:** The System MUST support deployment via OCI container images, Kubernetes Helm charts, RPM packages, and systemd services. Each deployment method MUST be documented and tested.
+
+**Trace:** Technical Architecture - Deployment
+
+```gherkin
+Feature: Multiple Deployment Options
+
+  Scenario: Deploy via Helm chart
+    Given a Kubernetes cluster is available
+    When the operator installs the Helm chart with default values
+    Then the backend, frontend, and database components MUST deploy successfully
+    And the dashboard MUST be accessible via the configured Ingress
+
+  Scenario: Deploy via RPM package
+    Given a Fedora/RHEL system is available
+    When the operator installs the RPM package
+    Then a systemd service MUST be created and enabled
+    And the dashboard MUST start via systemctl
+```
+
 ### NFR-016: Graceful Degradation
 
 **Description:** The System MUST degrade gracefully when backend components are unavailable: if TimescaleDB is down, show live data only with no history; if Redis is down, make direct API calls with no cache; if apalis workers are down, support manual refresh only; if the Keylime API is down, show cached state with an alert.
 
 **Trace:** High Availability - Architecture
 
+```gherkin
+Feature: Graceful Degradation
+
+  Scenario: TimescaleDB unavailable
+    Given TimescaleDB is down
+    When the user views the dashboard
+    Then the System MUST display live data from the Keylime API
+    And historical charts MUST display "Historical data unavailable"
+    And a banner MUST indicate the database is unreachable
+
+  Scenario: Redis cache unavailable
+    Given Redis is down
+    When the System needs to fetch agent data
+    Then the System MUST make direct API calls to the Keylime Verifier
+    And a WARNING banner MUST indicate "Cache unavailable — increased API load"
+
+  Scenario: Keylime API unavailable
+    Given the Keylime Verifier API is unreachable
+    When the user views the dashboard
+    Then the System MUST display cached data with staleness timestamps
+    And a CRITICAL banner MUST indicate "Keylime API unreachable — data may be stale"
+```
+
+### NFR-017: Circuit Breaker on Verifier API
+
+**Description:** The System MUST implement a circuit breaker pattern on Verifier API calls. The circuit MUST open after a configurable number of consecutive failures (default: 5). While open, the System MUST use cached data. The circuit MUST transition to half-open after a configurable timeout to test recovery.
+
+**Trace:** Technical Architecture - Event-Driven Ingestion
+
+```gherkin
+Feature: Circuit Breaker
+
+  Scenario: Circuit opens after consecutive failures
+    Given the Verifier API has returned errors for 5 consecutive requests
+    When the System evaluates the circuit breaker
+    Then the circuit MUST transition to the "open" state
+    And subsequent requests MUST be served from cache without contacting the Verifier
+    And a WARNING alert MUST indicate "Circuit breaker open — using cached data"
+
+  Scenario: Circuit transitions to half-open
+    Given the circuit breaker has been open for the configured timeout (default: 60s)
+    When the timeout elapses
+    Then the System MUST send a single probe request to the Verifier
+    And if the probe succeeds, the circuit MUST close and resume normal operation
+```
+
+### NFR-018: Request Rate Limiting
+
+**Description:** The System MUST enforce per-user and global request rate limiting to protect the Keylime Verifier and dashboard backend from overload. Rate limits MUST be configurable.
+
+**Trace:** Technical Architecture - IMA Log & Data Decoupling
+
+```gherkin
+Feature: Request Rate Limiting
+
+  Scenario: Per-user rate limit exceeded
+    Given user "operator@example.com" is configured with a limit of 100 requests/minute
+    When the user sends the 101st request within one minute
+    Then the System MUST return HTTP 429 Too Many Requests
+    And the response MUST include a Retry-After header
+
+  Scenario: Global rate limit protects Verifier
+    Given the global rate limit for Verifier API calls is 500 requests/second
+    When aggregate dashboard requests exceed 500/second
+    Then excess requests MUST be queued or rejected with HTTP 429
+    And the System MUST NOT forward more than 500 requests/second to the Verifier
+```
+
+### NFR-019: Cache TTL Configuration
+
+**Description:** The System MUST implement tiered cache TTLs: agent list 10 seconds, agent detail 30 seconds, policies 60 seconds, certificates 300 seconds. TTLs MUST be configurable.
+
+**Trace:** Scalability - Cache Invalidation
+
+```gherkin
+Feature: Cache TTL Configuration
+
+  Scenario: Agent list cache expires after TTL
+    Given the agent list cache TTL is configured at 10 seconds
+    When the user requests the agent list
+    And the cache was last populated 11 seconds ago
+    Then the System MUST fetch fresh data from the Verifier API
+    And the cache MUST be updated with the new data
+
+  Scenario: Certificate cache with longer TTL
+    Given the certificate cache TTL is configured at 300 seconds
+    When the user requests certificate data
+    And the cache was populated 120 seconds ago
+    Then the System MUST serve the cached certificate data
+    And no request MUST be made to the Verifier API
+```
+
+### NFR-020: Periodic Reconciliation
+
+**Description:** The System MUST run a periodic reconciliation sweep every 5 minutes to detect and correct any drift between the dashboard's cached state and the Verifier's actual state. The reconciliation interval MUST be configurable.
+
+**Trace:** Technical Architecture - Event-Driven Ingestion
+
+```gherkin
+Feature: Periodic Reconciliation
+
+  Scenario: Reconciliation detects state drift
+    Given the dashboard shows agent "agent-042" in GET_QUOTE state
+    And the Verifier reports agent "agent-042" in FAILED state
+    When the 5-minute reconciliation sweep runs
+    Then the dashboard MUST update agent "agent-042" to FAILED state
+    And the drift MUST be logged as a reconciliation correction
+
+  Scenario: Reconciliation finds no drift
+    Given all cached agent states match the Verifier's reported states
+    When the reconciliation sweep runs
+    Then no state changes MUST occur
+    And the reconciliation log MUST record "no drift detected"
+```
+
+### NFR-021: WebSocket Real-Time Updates
+
+**Description:** The System MUST provide WebSocket connections for real-time UI updates. WebSocket connections MUST support automatic reconnection with exponential backoff. The System MUST indicate connection status to the user.
+
+**Trace:** Technical Architecture - Data Flow
+
+```gherkin
+Feature: WebSocket Real-Time Updates
+
+  Scenario: WebSocket delivers real-time updates
+    Given a WebSocket connection is established between the browser and backend
+    When an agent state change is ingested by the backend
+    Then the change MUST be pushed to the browser via WebSocket
+    And the UI MUST update without requiring a page refresh
+
+  Scenario: WebSocket reconnection with backoff
+    Given a WebSocket connection drops
+    When the client attempts to reconnect
+    Then the client MUST use exponential backoff (1s, 2s, 4s, 8s, ...)
+    And a connection status indicator MUST show "Reconnecting..."
+    And upon successful reconnection, the indicator MUST show "Connected"
+```
+
+### NFR-022: Signed Update Packages
+
+**Description:** Offline update packages MUST be GPG-signed with integrity verification. Each update MUST include a Software Bill of Materials (SBOM). The System MUST verify the signature before applying any update.
+
+**Trace:** Deployment - Offline & Air-Gapped
+
+```gherkin
+Feature: Signed Update Packages
+
+  Scenario: Verify update package signature
+    Given an update package is available with a GPG signature
+    When the operator initiates the update
+    Then the System MUST verify the GPG signature before applying changes
+    And if the signature is invalid, the update MUST be rejected with error "invalid signature"
+
+  Scenario: SBOM included in update
+    Given an update package is available
+    When the operator inspects the package contents
+    Then an SBOM in SPDX or CycloneDX format MUST be included
+```
+
+### NFR-023: Concurrent Log Fetch Limit
+
+**Description:** The System MUST limit concurrent IMA log fetch requests to the Verifier to a maximum of 5 parallel requests. This prevents overloading the Verifier when multiple users request agent detail views simultaneously.
+
+**Trace:** Technical Architecture - IMA Log & Data Decoupling
+
+```gherkin
+Feature: Concurrent Log Fetch Limit
+
+  Scenario: Enforce maximum concurrent log fetches
+    Given 5 IMA log fetch requests are currently in progress
+    When a 6th user requests an IMA log view for a different agent
+    Then the 6th request MUST be queued until one of the active fetches completes
+    And the user MUST see a "Loading — request queued" indicator
+
+  Scenario: Concurrent fetches within limit
+    Given 3 IMA log fetch requests are currently in progress
+    When a 4th user requests an IMA log view
+    Then the request MUST proceed immediately without queuing
+```
+
 ---
 
 ## 5. Security Requirements Detail
+
+### SR-001: OIDC/SAML Authentication
+
+**Description:** The System MUST authenticate all users via an external OIDC or SAML identity provider. No local username/password authentication MUST be supported. The System MUST support multiple IdP configurations for federated environments.
+
+**Trace:** Dashboard Authentication - User Identity
+
+```gherkin
+Feature: OIDC/SAML Authentication
+
+  Scenario: Authenticate via OIDC provider
+    Given the dashboard is configured with an OIDC identity provider
+    When a user navigates to the dashboard without a session
+    Then the System MUST redirect the user to the OIDC provider login page
+    And upon successful authentication, the user MUST be redirected back with a valid session
+
+  Scenario: OIDC provider unreachable
+    Given the OIDC identity provider is unreachable
+    When a user attempts to log in
+    Then the System MUST display an error "Authentication service unavailable"
+    And no unauthenticated access to the dashboard MUST be permitted
+
+  Scenario: Session token expired
+    Given the user's session token has expired
+    When the user attempts any dashboard action
+    Then the System MUST redirect the user to re-authenticate via the IdP
+    And the user MUST be returned to their original page after re-authentication
+```
+
+### SR-002: MFA for Admin Role
+
+**Description:** The System MUST require Multi-Factor Authentication for users with the Admin role. MFA MUST be enforced at the identity provider level. The System MUST verify the MFA claim in the OIDC/SAML token before granting Admin privileges.
+
+**Trace:** Dashboard Authentication - User Identity
+
+```gherkin
+Feature: MFA for Admin Role
+
+  Scenario: Admin login requires MFA
+    Given user "admin@example.com" has the Admin role
+    When the user authenticates via the IdP without completing MFA
+    Then the System MUST deny Admin-level access
+    And the user MUST be granted the lowest applicable role (Viewer) until MFA is completed
+
+  Scenario: Admin with valid MFA claim
+    Given user "admin@example.com" has completed MFA at the IdP
+    When the OIDC token includes an MFA claim
+    Then the System MUST grant full Admin privileges
+```
 
 ### SR-003: Three-Tier RBAC
 
@@ -1680,17 +2581,351 @@ All write operations to Keylime MUST be blocked at the dashboard proxy layer for
 
 **Trace:** Dashboard RBAC - Role Definitions
 
+```gherkin
+Feature: Three-Tier RBAC Enforcement
+
+  Scenario: Viewer cannot export reports
+    Given the user has the Viewer role
+    When the user attempts to export a CSV report
+    Then the System MUST return HTTP 403 Forbidden
+    And the audit log MUST record the denied access attempt
+
+  Scenario: Operator can acknowledge alerts but not delete agents
+    Given the user has the Operator role
+    When the user acknowledges an alert
+    Then the action MUST succeed
+    When the user attempts to delete an agent
+    Then the System MUST return HTTP 403 Forbidden
+
+  Scenario: Admin can manage dashboard users
+    Given the user has the Admin role
+    When the user creates a new dashboard user with Operator role
+    Then the new user MUST be created successfully
+```
+
+### SR-004: mTLS for Keylime API Communication
+
+**Description:** The System MUST use mutual TLS (mTLS) for all communication with Keylime Verifier and Registrar APIs. The System MUST present a valid client certificate signed by the Keylime CA. The System MUST verify the server certificate of Keylime components.
+
+**Trace:** Threat Model - Trust Boundaries
+
+```gherkin
+Feature: mTLS API Communication
+
+  Scenario: Backend presents client certificate to Verifier
+    Given the backend is configured with a valid mTLS client certificate
+    When the backend connects to the Verifier API
+    Then the connection MUST use mutual TLS authentication
+    And the Verifier MUST accept the dashboard's client certificate
+
+  Scenario: Reject connection with invalid server certificate
+    Given the Verifier presents a certificate not signed by the trusted CA
+    When the backend attempts to connect
+    Then the connection MUST be rejected
+    And a CRITICAL alert MUST indicate "Verifier certificate validation failed"
+```
+
 ### SR-005: mTLS Private Key Protection
 
 **Description:** The mTLS private key grants full Keylime admin access. It MUST NEVER be stored on disk in cleartext. Supported storage backends: PKCS#11 HSM, HashiCorp Vault Transit, Kubernetes CSI Secret Store, or encrypted file with passphrase (development only). Rust's `rustls` MUST use a custom `SigningKey` trait for HSM/PKCS#11 offload.
 
 **Trace:** Secret Management - Credential Lifecycle
 
+```gherkin
+Feature: mTLS Private Key Protection
+
+  Scenario: Reject startup with cleartext key on disk
+    Given the mTLS private key file is present on disk in cleartext (unencrypted PEM)
+    When the System starts
+    Then the System MUST refuse to start
+    And an error MUST indicate "cleartext private key detected — use HSM or Vault"
+
+  Scenario: Graceful handling of HSM unavailability
+    Given the System is configured to use PKCS#11 HSM for key storage
+    When the HSM device is unreachable at startup
+    Then the System MUST refuse to start
+    And the error MUST indicate "HSM unreachable — cannot load mTLS key"
+```
+
+### SR-006: HSM or Vault-Backed Key Storage
+
+**Description:** The System MUST support HSM (PKCS#11) or HashiCorp Vault Transit as the primary storage backend for the mTLS private key. Kubernetes CSI Secret Store MUST be supported as an alternative. Encrypted file with passphrase MAY be supported for development environments only.
+
+**Trace:** Secret Management - Credential Lifecycle
+
+```gherkin
+Feature: Vault-Backed Key Storage
+
+  Scenario: Load private key from HashiCorp Vault
+    Given the System is configured to use HashiCorp Vault Transit for key storage
+    When the System starts
+    Then the mTLS private key MUST be loaded from Vault
+    And no key material MUST be written to disk
+
+  Scenario: Vault token expired
+    Given the Vault token has expired
+    When the System attempts to load the private key
+    Then the System MUST refuse to start
+    And an error MUST indicate "Vault token expired — renew before starting"
+```
+
+### SR-007: TLS Encryption on All Connections
+
+**Description:** The System MUST encrypt all network connections with TLS. No cleartext HTTP, database, or cache connections MUST be permitted. This applies to browser-to-dashboard, dashboard-to-Keylime, dashboard-to-database, and dashboard-to-cache connections.
+
+**Trace:** Transport Security - Encrypted Data Paths
+
+```gherkin
+Feature: TLS on All Connections
+
+  Scenario: Reject cleartext HTTP connection
+    Given the dashboard is running with TLS enabled
+    When a client attempts to connect via HTTP (port 80)
+    Then the System MUST redirect to HTTPS or reject the connection
+    And no data MUST be served over cleartext HTTP
+
+  Scenario: Database connection uses TLS
+    Given the TimescaleDB connection is configured
+    When the backend connects to the database
+    Then the connection MUST use TLS encryption
+```
+
+### SR-008: Browser-to-API TLS 1.3 Minimum
+
+**Description:** The System MUST enforce TLS 1.3 as the minimum protocol version for browser-to-dashboard API connections. TLS 1.2 and earlier MUST be rejected.
+
+**Trace:** Transport Security - Encrypted Data Paths
+
+```gherkin
+Feature: TLS 1.3 Minimum for Browser
+
+  Scenario: Accept TLS 1.3 connection
+    Given a browser supports TLS 1.3
+    When the browser connects to the dashboard
+    Then the TLS handshake MUST complete using TLS 1.3
+
+  Scenario: Reject TLS 1.2 connection
+    Given a client attempts to connect using TLS 1.2
+    When the TLS handshake is initiated
+    Then the System MUST reject the connection
+```
+
+### SR-009: API-to-Keylime TLS 1.2+ Minimum
+
+**Description:** The System MUST enforce TLS 1.2 or higher for all connections from the dashboard backend to Keylime components. This allows compatibility with Keylime deployments that have not yet upgraded to TLS 1.3.
+
+**Trace:** Transport Security - Encrypted Data Paths
+
+```gherkin
+Feature: TLS 1.2+ for Keylime API
+
+  Scenario: Connect to Keylime Verifier with TLS 1.2
+    Given the Keylime Verifier supports TLS 1.2 but not TLS 1.3
+    When the backend connects to the Verifier
+    Then the connection MUST complete using TLS 1.2
+
+  Scenario: Reject SSLv3 or TLS 1.1
+    Given a Keylime component offers only TLS 1.1
+    When the backend attempts to connect
+    Then the connection MUST be rejected
+```
+
+### SR-010: Short-Lived JWT Session Tokens
+
+**Description:** The System MUST issue short-lived JWT session tokens with a maximum lifetime of 15 minutes. Refresh tokens MUST be rotated on each use. Stolen refresh tokens MUST be detectable via replay detection.
+
+**Trace:** Dashboard Authentication - User Identity
+
+```gherkin
+Feature: Short-Lived Session Tokens
+
+  Scenario: Session token expires after 15 minutes
+    Given the user has an active session
+    When 15 minutes elapse without token refresh
+    Then the session token MUST expire
+    And the user MUST be prompted to re-authenticate
+
+  Scenario: Refresh token rotation
+    Given the user's access token is about to expire
+    When the client uses the refresh token to obtain a new access token
+    Then a new refresh token MUST also be issued
+    And the previous refresh token MUST be invalidated
+```
+
+### SR-011: Server-Side Session Revocation
+
+**Description:** The System MUST support server-side session revocation. Administrators MUST be able to revoke any active user session. Revoked sessions MUST be immediately invalidated regardless of token expiry.
+
+**Trace:** Dashboard Authentication - User Identity
+
+```gherkin
+Feature: Server-Side Session Revocation
+
+  Scenario: Admin revokes user session
+    Given admin "admin@example.com" views active sessions
+    When the admin revokes the session for "operator@example.com"
+    Then the operator's session MUST be immediately invalidated
+    And the operator's next API request MUST return HTTP 401 Unauthorized
+
+  Scenario: Revoked token cannot be reused
+    Given a session token has been revoked
+    When the revoked token is presented in an API request
+    Then the System MUST reject the request with HTTP 401
+```
+
+### SR-012: XSS and Injection Prevention
+
+**Description:** The System MUST implement Content Security Policy (CSP) headers and input sanitization to prevent XSS and injection attacks. All user input MUST be sanitized before rendering. CSP MUST restrict script sources to self only.
+
+**Trace:** Threat Model - Threat Catalog
+
+```gherkin
+Feature: XSS and Injection Prevention
+
+  Scenario: CSP headers present on all responses
+    Given the dashboard serves an HTTP response
+    Then the Content-Security-Policy header MUST be present
+    And script-src MUST be restricted to 'self'
+
+  Scenario: Sanitize user input in search
+    Given the user enters "<script>alert('xss')</script>" in the search bar
+    When the search is submitted
+    Then the input MUST be sanitized before processing
+    And no script execution MUST occur in the browser
+```
+
 ### SR-013: Data Minimization
 
 **Description:** The System MUST NEVER cache or store raw TPM quotes, IMA measurement logs, or raw boot event logs. These MUST be passed through from the Keylime API to the UI on demand and discarded. Only attestation results (pass/fail + timestamp) MUST be retained for historical analysis. PoP token hashes MUST NOT be displayed or cached; only session metadata (creation time, expiry, agent UUID) MAY be shown.
 
 **Trace:** Threat Model - Data Classification; Attestation Modes - Comparative View
+
+```gherkin
+Feature: Data Minimization
+
+  Scenario: Raw TPM quotes not persisted
+    Given the user views the Raw Data tab for agent "a1b2c3d4"
+    When the System fetches the TPM quote from the Verifier API
+    Then the raw quote data MUST be served directly to the browser
+    And the System MUST NOT write the raw quote data to any persistent store
+
+  Scenario: PoP tokens not displayed
+    Given a push-mode agent has an active session with a PoP token
+    When the user views the agent detail page
+    Then only session metadata (creation time, expiry, agent UUID) MUST be displayed
+    And the PoP token hash MUST NOT be shown or cached
+```
+
+### SR-014: PoP Token Privacy
+
+**Description:** The System MUST NEVER display or cache raw Proof-of-Possession (PoP) tokens. Only session metadata (creation time, expiry, agent UUID) MAY be shown in the UI.
+
+**Trace:** Attestation Modes - Comparative View
+
+```gherkin
+Feature: PoP Token Privacy
+
+  Scenario: PoP token excluded from API responses
+    Given the dashboard API serves push-mode session data
+    When the API response is generated
+    Then the response MUST NOT include raw PoP token values
+    And only session metadata MUST be included
+```
+
+### SR-015: Tamper-Evident Audit Log with RFC 3161
+
+**Description:** The System MUST implement tamper-evident hash-chained audit logging with RFC 3161 timestamp anchoring. This is defined in detail in FR-061 and duplicated here as a security requirement to ensure traceability.
+
+**Trace:** Compliance - Tamper-Evident Audit Logging
+
+```gherkin
+Feature: Tamper-Evident Audit Log
+
+  Scenario: Audit log entries are hash-chained
+    Given the audit log has existing entries
+    When a new audit event occurs
+    Then the new entry MUST include the SHA-256 hash of the previous entry
+    And the chain MUST be verifiable from the root anchor
+
+  Scenario: RFC 3161 timestamp anchoring
+    Given the System is configured with an RFC 3161 TSA
+    When the audit log chain root is created
+    Then the root MUST be anchored with an RFC 3161 timestamp token
+    And the timestamp token MUST be verifiable against the TSA certificate
+```
+
+### SR-016: SSRF Protection
+
+**Description:** The System MUST protect against Server-Side Request Forgery (SSRF) on webhook URLs. Webhook destinations MUST be validated against an allowlist. RFC 1918 private addresses MUST be blocked unless explicitly allowed. DNS rebinding protection MUST be implemented.
+
+**Trace:** Revocation - Alert Workflow
+
+```gherkin
+Feature: SSRF Protection
+
+  Scenario: Block webhook to private IP address
+    Given an admin configures a webhook URL pointing to 192.168.1.100
+    When the webhook configuration is saved
+    Then the System MUST reject the URL with error "RFC 1918 addresses blocked"
+
+  Scenario: Allow webhook to whitelisted destination
+    Given "hooks.slack.com" is in the webhook allowlist
+    When an admin configures a webhook to "https://hooks.slack.com/services/T00/B00/xxxx"
+    Then the webhook configuration MUST be accepted
+```
+
+### SR-017: Two-Person Approval for Policy Changes
+
+**Description:** The System MUST enforce a two-person approval workflow for all policy changes. This is a security requirement that mirrors FR-039 to ensure policy modifications cannot be unilaterally applied by a single administrator.
+
+**Trace:** Policy Management - Two-Person Rule
+
+```gherkin
+Feature: Two-Person Policy Approval Security
+
+  Scenario: Policy change without approval blocked
+    Given Admin A drafts and saves a policy change
+    When Admin A attempts to push the policy to the Verifier without approval
+    Then the System MUST block the push
+    And the audit log MUST record the blocked attempt
+```
+
+### SR-018: Drafter Cannot Self-Approve
+
+**Description:** The System MUST enforce that the approver of a policy change MUST NOT be the same user as the drafter. This separation of duties is a critical security control.
+
+**Trace:** Policy Management - Two-Person Rule
+
+```gherkin
+Feature: Drafter Cannot Self-Approve
+
+  Scenario: Same user attempts draft and approval
+    Given Admin A drafted a policy change
+    When Admin A attempts to approve the same change
+    Then the System MUST reject the approval with "self-approval not permitted"
+    And the audit log MUST record the rejected self-approval attempt
+```
+
+### SR-019: Multi-Tenancy Isolation
+
+**Description:** The System MUST enforce strict multi-tenancy isolation. Cross-tenant data MUST NEVER be mixed or accessible. Each tenant MUST have isolated data stores, separate RBAC, and independent configuration.
+
+**Trace:** Dashboard RBAC - Multi-Tenancy
+
+```gherkin
+Feature: Multi-Tenancy Isolation
+
+  Scenario: Cross-tenant data access blocked
+    Given Tenant A has agent "agent-001" and Tenant B has agent "agent-002"
+    When a user authenticated to Tenant A requests agent "agent-002"
+    Then the System MUST return HTTP 404 Not Found
+    And no data from Tenant B MUST be included in the response
+
+  Scenario: Tenant isolation in search results
+    Given Tenant A has 100 agents and Tenant B has 50 agents
+    When a Tenant A user performs a global search
+    Then search results MUST only include Tenant A's 100 agents
+```
 
 ### SR-020: Data Classification
 
@@ -1708,6 +2943,87 @@ All write operations to Keylime MUST be blocked at the dashboard proxy layer for
 | Dashboard credentials | SECRET | Never persisted | OIDC session tokens |
 
 **Trace:** Threat Model - Data Classification
+
+```gherkin
+Feature: Data Classification Enforcement
+
+  Scenario: SECRET data never written to disk
+    Given the mTLS private key is classified as SECRET
+    When the System operates normally
+    Then the private key MUST NOT exist on disk in any form (cleartext or encrypted)
+    And the key MUST be loaded exclusively from HSM or Vault
+
+  Scenario: CONFIDENTIAL data encrypted at rest
+    Given EK/AK public keys are classified as CONFIDENTIAL
+    When the System caches public key data in Redis
+    Then the cached data MUST be encrypted at rest
+    And the cache entry MUST have a TTL configured
+```
+
+### SR-021: Write Operations Blocked for Non-Admin
+
+**Description:** The System MUST block all write operations to Keylime APIs at the dashboard proxy layer for non-Admin roles. This provides defense-in-depth beyond RBAC role checks.
+
+**Trace:** Dashboard RBAC - Role Definitions
+
+```gherkin
+Feature: Write Operation Blocking
+
+  Scenario: Operator write request blocked at proxy
+    Given the user has the Operator role
+    When the user sends a POST request to create a policy (bypassing UI)
+    Then the dashboard proxy MUST block the request before it reaches the Keylime API
+    And the System MUST return HTTP 403 Forbidden
+    And the blocked attempt MUST be logged in the audit log
+```
+
+### SR-022: mTLS Sidecar Option
+
+**Description:** The System MAY support an mTLS sidecar (Envoy or Ghostunnel) as an alternative to application-level mTLS. This allows deployments where certificate management is handled by the service mesh.
+
+**Trace:** Transport Security - mTLS Sidecar Option
+
+```gherkin
+Feature: mTLS Sidecar Support
+
+  Scenario: Delegate mTLS to Envoy sidecar
+    Given the System is deployed with an Envoy sidecar handling mTLS
+    When the backend communicates with the Keylime Verifier
+    Then the Envoy sidecar SHOULD terminate the mTLS connection
+    And the backend SHOULD communicate with Envoy over localhost
+```
+
+### SR-023: No Unsafe Rust Code
+
+**Description:** The dashboard Rust crate MUST use `#![forbid(unsafe_code)]` to prevent unsafe Rust code blocks. This eliminates entire classes of memory safety vulnerabilities.
+
+**Trace:** Technical Architecture - Why Rust
+
+```gherkin
+Feature: No Unsafe Rust Code
+
+  Scenario: Build fails on unsafe code
+    Given the dashboard crate has #![forbid(unsafe_code)] at the crate root
+    When a developer adds an unsafe block to the crate
+    Then the Rust compiler MUST reject the build with error "unsafe code is forbidden"
+```
+
+### SR-024: Signed Cache Entries
+
+**Description:** The System MUST sign cache entries and enforce TTLs to mitigate cache poisoning attacks. Cache entries MUST be validated before use.
+
+**Trace:** Threat Model - Threat Catalog
+
+```gherkin
+Feature: Signed Cache Entries
+
+  Scenario: Detect poisoned cache entry
+    Given agent data is cached with an HMAC signature
+    When a cache entry is modified externally (cache poisoning attempt)
+    Then the System MUST detect the signature mismatch
+    And the System MUST discard the poisoned entry and fetch fresh data from the API
+    And a CRITICAL alert MUST be raised indicating "cache integrity violation"
+```
 
 ### SR-025: TPM Identity Change Detection
 
@@ -1729,6 +3045,93 @@ Feature: TPM Identity Change Detection
     Given agent "agent-042" has a registration count of 4
     When the System evaluates identity events
     Then the System MUST raise a WARNING alert indicating "high regcount (>3)"
+```
+
+### SR-026: Audit Log Retention
+
+**Description:** The System MUST retain audit log entries for a minimum of 1 year to meet compliance requirements. Retention period MUST be configurable. Archived logs MUST remain tamper-evident and verifiable.
+
+**Trace:** Compliance - Tamper-Evident Audit Logging
+
+```gherkin
+Feature: Audit Log Retention
+
+  Scenario: Audit log retained for minimum period
+    Given the retention policy is set to 1 year
+    When audit log entries are older than 1 year
+    Then the System MUST archive the entries but NOT delete them automatically
+    And archived entries MUST remain verifiable via hash chain validation
+
+  Scenario: Prevent premature log deletion
+    Given an administrator attempts to delete audit log entries less than 1 year old
+    When the deletion request is submitted
+    Then the System MUST reject the request with "retention policy violation"
+```
+
+### SR-027: Emergency Bypass with Break-Glass Audit
+
+**Description:** The System MUST support an emergency bypass mechanism that allows policy changes to skip the two-person approval workflow. Emergency bypass MUST require break-glass authentication and MUST produce a detailed audit trail including: who invoked the bypass, why (free-text justification), what action was taken, and timestamp.
+
+**Trace:** Policy Management - Two-Person Rule
+
+```gherkin
+Feature: Emergency Bypass with Break-Glass Audit
+
+  Scenario: Emergency bypass for critical policy rollback
+    Given a critical incident requires immediate policy rollback
+    And the two-person rule is enforced
+    When Admin A invokes the emergency bypass with justification "critical production incident"
+    Then the policy change MUST be applied without a second approver
+    And the audit log MUST record the bypass with: actor, justification, action, and timestamp
+    And a CRITICAL alert MUST be raised: "Break-glass bypass invoked"
+
+  Scenario: Break-glass without justification rejected
+    Given Admin A invokes the emergency bypass
+    When no justification text is provided
+    Then the System MUST reject the bypass with "justification required for emergency bypass"
+```
+
+### SR-028: Configurable Idle Session Timeout
+
+**Description:** The System MUST enforce a configurable idle session timeout. Sessions inactive beyond the timeout period MUST be automatically terminated. The default idle timeout MUST be 30 minutes.
+
+**Trace:** Dashboard Authentication - User Identity
+
+```gherkin
+Feature: Idle Session Timeout
+
+  Scenario: Session terminated after idle timeout
+    Given the idle session timeout is configured at 30 minutes
+    When the user has been inactive for 31 minutes
+    Then the session MUST be automatically terminated
+    And the user MUST be redirected to the login page on their next action
+
+  Scenario: Activity resets idle timer
+    Given the idle session timeout is 30 minutes
+    When the user performs an action at the 25-minute mark
+    Then the idle timer MUST reset to 0
+    And the session MUST remain active for another 30 minutes of inactivity
+```
+
+### SR-029: Rate Limiting on Session Creation
+
+**Description:** The System MUST enforce rate limiting on the dashboard session creation endpoint to prevent brute-force attacks on authentication. Failed login attempts MUST be rate-limited per source IP.
+
+**Trace:** Attestation Modes - Comparative View
+
+```gherkin
+Feature: Session Creation Rate Limiting
+
+  Scenario: Rate limit exceeded on login attempts
+    Given the rate limit for session creation is 10 attempts per minute per IP
+    When a client sends the 11th login request within one minute from the same IP
+    Then the System MUST return HTTP 429 Too Many Requests
+    And the response MUST include a Retry-After header
+
+  Scenario: Successful login after cooldown
+    Given a client was rate-limited on login attempts
+    When the Retry-After period elapses
+    Then the client MUST be able to attempt login again
 ```
 
 ---
