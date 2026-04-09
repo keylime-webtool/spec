@@ -7,6 +7,17 @@
 
 ---
 
+> ## Inline Review Summary
+>
+> **Reviewer:** Principal QA Architect & SDD Agile Coach | **Review Date:** 2026-04-09
+>
+> * **Non-deterministic assertions resolved (6 instances):** Gherkin scenarios using "MUST be disabled or hidden" — an ambiguous assertion preventing deterministic test automation — have been corrected. RBAC-denied actions now assert "MUST NOT be rendered" (feature absent for unauthorized role); state-based restrictions assert "MUST be disabled" (control present but precondition unmet).
+> * **Multi-action scenarios decomposed (3 instances):** FR-020 (IMA Log), FR-035 (Policy Diff), and SR-003 (Operator RBAC) each contained multiple When/Then blocks in a single scenario. Each has been split into atomic scenarios per BDD single-outcome principle.
+> * **RFC 2119 negation normalized:** "no X MUST be sent" rewritten to "the System MUST NOT send X" for consistency with RFC 2119 standard negation form (FR-004).
+> * **Cross-references added:** SR-014 (PoP Token Privacy) now explicitly cross-references SR-013 (Data Minimization) to clarify their relationship and prevent redundant test coverage.
+
+---
+
 ## 1. Core Objective
 
 The Keylime Monitoring Dashboard (the "System") is a web-based security operations platform that provides centralized monitoring, management, and compliance capabilities for Keylime remote attestation infrastructure. It consumes Keylime's existing Verifier and Registrar REST APIs (v2 pull-mode and v3 push-mode) via mTLS without requiring any modification to Keylime components. The System targets Security Operations (SecOps) teams, System Administrators, Compliance Officers, and DevSecOps engineers.
@@ -278,7 +289,9 @@ Feature: Global Agent Search
     Given the user enters "192.168.1.0/99" in the search bar
     When the search is submitted
     Then the System MUST display a validation error indicating invalid CIDR notation
-    And no search request MUST be sent to the backend
+    And the System MUST NOT send a search request to the backend
+
+> **Reviewer Note:** Rephrased from "no search request MUST be sent" to standard RFC 2119 negation form "the System MUST NOT send." The original syntax is ambiguous — "no" could modify "search request" or "MUST be sent."
 ```
 
 ### FR-005: Time Range Selector
@@ -347,13 +360,18 @@ Feature: Data Export
 
   Scenario: Viewer cannot export
     Given the user has the Viewer role
-    When the user looks for the Export button
-    Then the Export button MUST be disabled or hidden
+    When the user views the agent fleet list
+    Then the Export action MUST NOT be rendered for the Viewer role
+
+> **Reviewer Note:** Changed "MUST be disabled or hidden" to "MUST NOT be rendered" — RBAC-denied features must be absent from the UI, not merely grayed out. A disabled control implies the feature exists but is temporarily unavailable; an absent control implies the user lacks the capability, which is the correct RBAC semantic. Also changed the When step from "looks for the Export button" (user intent, not a testable action) to "views the agent fleet list" (observable state).
 
   Scenario: Export with empty filter result
     Given the user has applied filters that match zero agents
-    When the user clicks "Export"
-    Then the Export action MUST be disabled or display "No data to export"
+    When the user views the Export action
+    Then the Export action MUST be disabled
+    And a message MUST indicate "No data to export"
+
+> **Reviewer Note:** Changed "MUST be disabled or display" to two deterministic assertions: the action is disabled AND a message explains why. Each Then step is independently verifiable.
 ```
 
 ### FR-008: Dark/Light Mode
@@ -639,7 +657,9 @@ Feature: Agent Detail Actions
   Scenario: Delete agent requires Admin role
     Given the user has the Operator role
     When the user views the agent detail page
-    Then the "Delete" action button MUST be disabled or hidden
+    Then the "Delete" action MUST NOT be rendered for the Operator role
+
+> **Reviewer Note:** Changed "MUST be disabled or hidden" to "MUST NOT be rendered" — consistent with RBAC semantic: the Operator role lacks the delete capability entirely, so the control should be absent.
 
   Scenario: Force attestation fails due to agent unreachable
     Given the user has the Operator role
@@ -658,11 +678,16 @@ Feature: Agent Detail Actions
 ```gherkin
 Feature: Agent Detail Tabs
 
-  Scenario: View IMA log with search
+  Scenario: View IMA log entries
     Given the user is viewing agent "a1b2c3d4" detail page
     When the user selects the "IMA Log" tab
     Then the IMA measurement list entries MUST be displayed
     And each entry MUST indicate policy match or mismatch
+
+> **Reviewer Note:** Split from original "View IMA log with search" scenario which contained two When/Then blocks. Each BDD scenario MUST have exactly one When/Then pair to maintain test isolation and deterministic pass/fail.
+
+  Scenario: Search IMA log by file path
+    Given the user is viewing the IMA Log tab for agent "a1b2c3d4"
     When the user searches for "/usr/bin/bash"
     Then only IMA entries for that file path MUST be shown
 
@@ -747,7 +772,9 @@ Feature: PCR Change Detection
   Scenario: PCR change acknowledgement denied for Viewer
     Given the user has the Viewer role
     When the user views a PCR with a "Changed" indicator
-    Then the "Acknowledge" and "Investigate" buttons MUST be disabled or hidden
+    Then the "Acknowledge" and "Investigate" actions MUST NOT be rendered for the Viewer role
+
+> **Reviewer Note:** Changed "MUST be disabled or hidden" to "MUST NOT be rendered" — Viewer role lacks the capability to acknowledge or investigate PCR changes, so the controls should be absent.
 ```
 
 ### FR-023: Cross-Tab Navigation
@@ -1068,10 +1095,15 @@ Feature: Policy Editor
 ```gherkin
 Feature: Policy Versioning
 
-  Scenario: View policy change diff
+  Scenario: View policy version history
     Given policy "production-v2" has been updated 3 times
     When the user views the change history
     Then the System MUST list all 3 versions with timestamps and authors
+
+> **Reviewer Note:** Split from original "View policy change diff" scenario which contained two When/Then blocks. Version listing and version comparison are distinct user actions that MUST be independently testable.
+
+  Scenario: Compare policy versions
+    Given the user is viewing the change history for policy "production-v2"
     When the user selects two versions for comparison
     Then a side-by-side diff MUST highlight added, removed, and modified entries
 
@@ -1086,7 +1118,9 @@ Feature: Policy Versioning
     Given the user has the Operator role
     And policy "production-v2" is at version 3
     When the user attempts to select "Rollback to version 2"
-    Then the rollback action MUST be disabled or hidden
+    Then the rollback action MUST NOT be rendered for the Operator role
+
+> **Reviewer Note:** Changed "MUST be disabled or hidden" to "MUST NOT be rendered" — rollback is an Admin-only capability, so Operators should not see the control at all.
 ```
 
 ### FR-036: Measured Boot Policy Management
@@ -1724,8 +1758,10 @@ Feature: One-Click Compliance Report Export
 
   Scenario: Compliance report export denied for Viewer
     Given the user has the Viewer role
-    When the user attempts to export a compliance report
-    Then the Export button MUST be disabled or hidden
+    When the user views a compliance report
+    Then the Export action MUST NOT be rendered for the Viewer role
+
+> **Reviewer Note:** Changed "MUST be disabled or hidden" to "MUST NOT be rendered" — RBAC-denied export capability should be absent for the Viewer role. Also changed When step from "attempts to export" (presupposes the control exists) to "views a compliance report" (observable state).
 ```
 
 ### FR-061: Tamper-Evident Hash-Chained Audit Logging
@@ -2590,10 +2626,15 @@ Feature: Three-Tier RBAC Enforcement
     Then the System MUST return HTTP 403 Forbidden
     And the audit log MUST record the denied access attempt
 
-  Scenario: Operator can acknowledge alerts but not delete agents
+  Scenario: Operator can acknowledge alerts
     Given the user has the Operator role
     When the user acknowledges an alert
     Then the action MUST succeed
+
+> **Reviewer Note:** Split from original "Operator can acknowledge alerts but not delete agents" which contained two When/Then blocks — a positive and negative test in one scenario. Each scenario MUST test a single outcome for deterministic pass/fail and clear traceability.
+
+  Scenario: Operator cannot delete agents
+    Given the user has the Operator role
     When the user attempts to delete an agent
     Then the System MUST return HTTP 403 Forbidden
 
@@ -2818,7 +2859,9 @@ Feature: Data Minimization
 
 ### SR-014: PoP Token Privacy
 
-**Description:** The System MUST NEVER display or cache raw Proof-of-Possession (PoP) tokens. Only session metadata (creation time, expiry, agent UUID) MAY be shown in the UI.
+**Description:** The System MUST NEVER display or cache raw Proof-of-Possession (PoP) tokens. Only session metadata (creation time, expiry, agent UUID) MAY be shown in the UI. This requirement is a specific instance of SR-013 (Data Minimization) applied to push-mode PoP tokens.
+
+> **Reviewer Note:** SR-014 overlaps with SR-013's PoP token scenario. SR-014 is retained as a distinct requirement because PoP token handling is a push-mode-specific security concern that warrants independent traceability. Cross-reference added to clarify the relationship.
 
 **Trace:** Attestation Modes - Comparative View
 
