@@ -3296,6 +3296,7 @@ As defined in the source presentation, the implementation follows three phases:
 ## 7. Implementation Refinements
 
 > **Added:** 2026-04-10 — Requirements refined from implementation decisions in `keylime-webtool-frontend` and `keylime-webtool-backend`.
+> **Updated:** 2026-04-15 — Added IR-008 through IR-013 from ongoing implementation in `keylime-webtool-backend` and `keylime-webtool-frontend`.
 
 ### IR-001: Standard API Response Envelope
 
@@ -3455,3 +3456,163 @@ Each stage result MUST include `duration_ms` (milliseconds spent in this stage, 
 | `Retrying` | Retry in progress |
 
 **Trace:** Implementation — `keylime-webtool-backend/src/models/alert.rs`
+
+### IR-008: Alert Lifecycle State Machine and In-Memory Store
+
+**Description:** The alert lifecycle workflow (FR-047) MUST implement the following state machine with guarded transitions. The backend provides an in-memory `AlertStore` with thread-safe read/write access that enforces transition rules and supports filtering by severity and state.
+
+**State Machine:**
+
+```text
+New → Acknowledged → UnderInvestigation → Resolved
+ │         │                │
+ │         │                └──────────────→ Dismissed
+ │         └───────────────────────────────→ Dismissed
+ └─────────────────────────────────────────→ Dismissed
+```
+
+**Transition Rules:**
+
+| Action | Valid Source States | Target State | Side Effects |
+|--------|-------------------|--------------|--------------|
+| Acknowledge | `New` | `Acknowledged` | Sets `acknowledged_timestamp` |
+| Investigate | `New`, `Acknowledged` | `UnderInvestigation` | Sets `acknowledged_timestamp` if null; optionally sets `assigned_to` |
+| Resolve | Any non-terminal | `Resolved` | Optionally sets `resolution` reason |
+| Dismiss | Any non-terminal | `Dismissed` | — |
+| Escalate | Any non-terminal | *(unchanged)* | Increments `escalation_count` |
+
+**Terminal States:** `Resolved` and `Dismissed` reject all further transitions except read.
+
+**Alert Types:**
+
+| Type | Identifier | Description |
+|------|-----------|-------------|
+| Attestation Failure | `attestation_failure` | Quote verification or policy check failure |
+| Certificate Expiry | `cert_expiry` | Certificate approaching or past expiry |
+| Policy Violation | `policy_violation` | IMA or measured boot policy violation |
+| PCR Change | `pcr_change` | Unexpected PCR value change detected |
+| Service Down | `service_down` | Backend service unreachable |
+| Rate Limit | `rate_limit` | Rate limiting threshold exceeded |
+| Clock Skew | `clock_skew` | Time drift between agent and verifier |
+
+**Summary Computation:** Active alerts (not `Resolved` or `Dismissed`) are counted by severity. Resolved alerts within the last 24 hours are counted separately.
+
+**Trace:** Implementation — `keylime-webtool-backend/src/models/alert_store.rs`, `keylime-webtool-backend/src/models/alert.rs`, `keylime-webtool-backend/src/api/handlers/alerts.rs`, `keylime-webtool-frontend/src/pages/Alerts/Alerts.tsx`
+
+### IR-009: Certificate Expiry Derivation from Registration Count
+
+**Description:** The certificate expiry dashboard (FR-051) derives certificate expiry status from Keylime Registrar agent data. Since Keylime does not expose certificate metadata directly, the backend reconstructs certificate records from agent registration information.
+
+**Derivation Rules:**
+
+| Certificate | Source | Expiry Logic |
+|-------------|--------|-------------|
+| EK (Endorsement Key) | Registrar `ek_tpm` | Fixed 10-year validity from registration date |
+| AK (Attestation Key) | Registrar `aik_tpm` | Agents with `regcount > 2` receive a 25-day validity (simulating a troubled agent approaching expiry); all others receive 2-year validity |
+
+**Expiry Status Thresholds:**
+
+| Status | Condition |
+|--------|-----------|
+| `expired` | `not_after < now` |
+| `expiring_soon` | `not_after < now + 30 days` |
+| `valid` | `not_after >= now + 30 days` |
+
+**Certificate ID Generation:** Deterministic UUID v5 derived from `agent_id + cert_type`, ensuring stable IDs across API calls.
+
+**Expiry Summary Response:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `expired` | integer | Count of expired certificates |
+| `expiring_30d` | integer | Count expiring within 30 days |
+| `valid` | integer | Count of valid certificates |
+| `total` | integer | Total certificate count |
+
+**Trace:** Implementation — `keylime-webtool-backend/src/api/handlers/certificates.rs`, `keylime-webtool-backend/src/models/certificate.rs`, `keylime-webtool-frontend/src/pages/Certificates/Certificates.tsx`
+
+### IR-010: Attestation Timeline Distribution Algorithm
+
+**Description:** The attestation timeline (FR-024) distributes attestation event counts across hourly buckets using a deterministic variation algorithm. Since the backend does not yet persist attestation history, current agent states are used to compute baseline totals which are then distributed with natural-looking variation.
+
+**Algorithm:**
+
+1. Count total successful and failed agents from Verifier state (pull-mode `GET_QUOTE` = success, `FAILED`/`INVALID_QUOTE`/`TENANT_FAILED` = failure; push-mode `accept_attestations` flag determines pass/fail).
+2. Compute the number of hourly buckets from the requested time range.
+3. Generate per-bucket weights using: `weight = (1 + 0.5 * sin(i * 0.9)) * jitter`, where `jitter` is derived from a deterministic integer hash `(i * 2654435761) >> 16 mod 100`, mapped to range [0.7, 1.3].
+4. Normalize weights so buckets sum exactly to the total count.
+5. Correct rounding error by distributing remainder to buckets with the largest fractional parts.
+
+**Timeline Bucket Response:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `hour` | datetime (ISO 8601) | Start of the hourly bucket |
+| `successful` | integer | Successful attestation count for this hour |
+| `failed` | integer | Failed attestation count for this hour |
+
+**Supported Time Ranges:** `1h`, `6h`, `24h`, `7d`, `30d` (parsed from query parameter `?range=`).
+
+**Trace:** Implementation — `keylime-webtool-backend/src/api/handlers/attestations.rs`, `keylime-webtool-frontend/src/pages/Dashboard/Dashboard.tsx`, `keylime-webtool-frontend/src/pages/Attestations/Attestations.tsx`
+
+### IR-011: Frontend RBAC UI Enforcement
+
+**Description:** The frontend enforces the three-tier RBAC model (SR-003) by conditionally rendering UI controls based on the authenticated user's role. Controls for unauthorized actions MUST NOT be rendered (not merely disabled), consistent with the RBAC semantic that absent controls indicate absent capability.
+
+**Role Hierarchy:**
+
+| Role | Level | `canWrite()` | `isAdmin()` |
+|------|-------|-------------|-------------|
+| `viewer` | 0 | false | false |
+| `operator` | 1 | true | false |
+| `admin` | 2 | true | true |
+
+**Enforced Controls:**
+
+| Control | Required Role | Enforcement |
+|---------|--------------|-------------|
+| Agent selection checkboxes (FR-016) | `operator` | Not rendered for `viewer` |
+| Bulk operation buttons (FR-016) | `operator` | Not rendered for `viewer` |
+| Policy "New Policy" / "Import" buttons (FR-034) | `operator` | Not rendered for `viewer` |
+| Export action (FR-007) | `operator` | Not rendered for `viewer` |
+| Alert threshold configuration (FR-011) | `admin` | Not rendered for `operator` / `viewer` |
+
+**State Management:** Role state is managed via a Zustand store (`authStore`) with `sessionStorage` token persistence. The `canWrite()` helper returns `true` for `operator` and `admin`; `isAdmin()` returns `true` only for `admin`.
+
+**Trace:** Implementation — `keylime-webtool-frontend/src/store/authStore.ts`, `keylime-webtool-frontend/src/pages/Agents/AgentList.tsx`, `keylime-webtool-frontend/src/pages/Policies/Policies.tsx`
+
+### IR-012: Visualization Settings Persistence
+
+**Description:** User visualization preferences (FR-002, FR-006, FR-008) MUST be persisted in the browser's `localStorage` under the key `visualization-settings` and restored on page load. The settings store is implemented as a Zustand reactive store that applies changes immediately (e.g., theme changes update the `data-theme` attribute on `document.documentElement`).
+
+**Persisted Settings:**
+
+| Setting | Type | Default | Related FR |
+|---------|------|---------|-----------|
+| `theme` | `"light"` \| `"dark"` | `"light"` | FR-008 |
+| `autoRefresh` | boolean | `true` | FR-006 |
+| `refreshInterval` | integer (seconds) | `30` | FR-002 |
+| `defaultTimeRange` | string | `"24h"` | FR-005 |
+| `showChartLabels` | boolean | `true` | — |
+| `tablePageSize` | integer | `25` | FR-013 |
+
+**Theme Application:** The `data-theme` attribute on `<html>` is set on initial load (before first render) and on every theme change. CSS variables switch between light and dark color palettes. A toggle button in the top bar (moon/sun icon) provides quick access.
+
+**Trace:** Implementation — `keylime-webtool-frontend/src/store/visualizationStore.ts`, `keylime-webtool-frontend/src/pages/Settings/Settings.tsx`, `keylime-webtool-frontend/src/components/Layout/TopBar.tsx`
+
+### IR-013: Dashboard KPI Fallback Computation
+
+**Description:** The fleet overview KPI dashboard (FR-001) MUST compute attestation-related KPIs even when no dedicated attestation history endpoint is available. The frontend derives fallback KPIs directly from the agent list data returned by `GET /api/agents`.
+
+**Fallback Computation:**
+
+| KPI | Computation |
+|-----|------------|
+| Total Agents | `paginated_response.total_items` (if available) or `agents.length` |
+| Failed Attestations | Count of agents where `state` is `failed`, `invalid_quote`, or `tenant_failed` (pull-mode), or where `state` is `fail` (push-mode) |
+| Attestation Success Rate | `((total - failed) / total) * 100`, displayed as percentage |
+| Active Alerts (Critical) | From `GET /api/alerts/summary` → `critical` count |
+
+**Rationale:** This fallback ensures the dashboard displays meaningful data from the first deployment, before attestation history persistence (TimescaleDB) is implemented. The KPIs degrade gracefully: when the attestation summary endpoint returns data, it takes precedence; when it returns empty or errors, the agent-state-derived values are used.
+
+**Trace:** Implementation — `keylime-webtool-frontend/src/pages/Dashboard/Dashboard.tsx`, `keylime-webtool-backend/src/api/handlers/kpis.rs`
