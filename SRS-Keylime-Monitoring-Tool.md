@@ -113,6 +113,7 @@ The System transforms Keylime from a CLI-driven security tool into a visual oper
 | FR-077 | Webtool backend health check with polling | MUST | Integration Status - Backend Connectivity |
 | FR-078 | Timezone selection with auto-detect | SHOULD | Settings - Visualization |
 | FR-079 | Date format selection for timestamp rendering | MUST | Settings - Visualization |
+| FR-080 | Time format selection (12h/24h) for timestamp rendering | MUST | Settings - Visualization |
 
 ### 2.2 Non-Functional Requirements
 
@@ -2469,6 +2470,46 @@ Feature: Date Format Selection
     When the user navigates to any page displaying timestamps
     Then timestamps SHOULD render dates in YYYY-MM-DD (ISO 8601) format
     And the Settings > Visualization date format dropdown SHOULD show "YYYY-MM-DD" as the default
+```
+
+### FR-080: Time Format Selection for Timestamp Rendering
+
+**Description:** The System MUST provide a time format setting in the Visualization Settings section, alongside the timezone (FR-078) and date format (FR-079) settings. The user MUST be able to select between a 24-hour format (`HH:mm:ss`, e.g., `14:30:00`) and a 12-hour format (`hh:mm:ss A`, e.g., `02:30:00 PM`). The default MUST be `24h`. The selected format MUST be persisted in localStorage via the visualization store. The selected format MUST be applied consistently to all time-of-day rendering across the dashboard, including the agent list, agent detail timeline, audit log, alerts, attestation timestamps, and dashboard charts.
+
+**Trace:** Settings - Visualization
+
+```gherkin
+Feature: Time Format Selection
+
+  Scenario: Select 12-hour time format
+    Given the user navigates to Settings > Visualization
+    When the user selects "12h" from the time format selector
+    Then all timestamps across the dashboard MUST render times in 12-hour format with AM/PM suffix
+    And the time format selector MUST show "12h" as the active selection
+
+  Scenario: Select 24-hour time format
+    Given the user navigates to Settings > Visualization
+    When the user selects "24h" from the time format selector
+    Then all timestamps across the dashboard MUST render times in 24-hour format without AM/PM suffix
+    And the time format selector MUST show "24h" as the active selection
+
+  Scenario: Time format persists across sessions
+    Given the user has selected "12h" as the time format
+    When the user closes and reopens the browser
+    Then the time format MUST remain "12h"
+    And all timestamps MUST render in 12-hour format without requiring reconfiguration
+
+  Scenario: Time format applied to agent list timestamps
+    Given the user has selected "12h" as the time format
+    When the user navigates to the Agent Fleet list view
+    Then the "Last Attestation" column timestamps MUST render times in 12-hour format
+    And the "Registration Date" column timestamps MUST render times in 12-hour format
+
+  Scenario: Default time format on first visit
+    Given the user has never configured a time format preference
+    When the user navigates to any page displaying timestamps
+    Then timestamps MUST render times in 24-hour format
+    And the Settings > Visualization time format selector MUST show "24h" as the default
 ```
 
 ---

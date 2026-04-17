@@ -1038,6 +1038,7 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | `#[serde(default)]` on Keylime models | Tolerates missing/renamed fields across Keylime API versions without breaking deserialization | NFR-002 |
 | Timezone auto-detect with manual override | Default to browser timezone for zero-config; IANA dropdown for operators in different timezones than their fleet | FR-078 |
 | Explicit date format selection | Eliminates locale-dependent ambiguity (e.g., 04/05 = April 5 vs May 4); ISO 8601 default for cross-region consistency | FR-079 |
+| Explicit time format selection (12h/24h) | Accommodates regional conventions (e.g., US 12-hour vs European 24-hour); 24h default avoids AM/PM ambiguity in operational contexts | FR-080 |
 
 ---
 
@@ -1135,6 +1136,7 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | FR-077 | 3.2.2, 3.7.3 | 1s polling via `refetchInterval`, `probe_verifier()`/`probe_registrar()` |
 | FR-078 | 3.8.2 | `visualizationStore`: timezone with auto-detect, IANA timezone dropdown in Settings |
 | FR-079 | 3.8.2 | `visualizationStore`: date format selection (6 formats), ISO 8601 default, applied to all timestamp rendering |
+| FR-080 | 3.8.2 | `visualizationStore`: time format selection (12h/24h), 24h default, applied to all time-of-day rendering |
 
 ### 6.2 Non-Functional Requirements
 
