@@ -112,6 +112,7 @@ The System transforms Keylime from a CLI-driven security tool into a visual oper
 | FR-076 | Sidebar visibility toggle (hamburger button) | MUST | Dashboard - Navigation Structure |
 | FR-077 | Webtool backend health check with polling | MUST | Integration Status - Backend Connectivity |
 | FR-078 | Timezone selection with auto-detect | SHOULD | Settings - Visualization |
+| FR-079 | Date format selection for timestamp rendering | MUST | Settings - Visualization |
 
 ### 2.2 Non-Functional Requirements
 
@@ -2434,6 +2435,40 @@ Feature: Timezone Selection
     When the user clicks the "Auto-Detect" button again to deactivate it
     Then the timezone dropdown MUST become enabled
     And the user MUST be able to select a different timezone
+```
+
+### FR-079: Date Format Selection for Timestamp Rendering
+
+**Description:** The System MUST provide a date format setting in the Visualization Settings section, alongside the timezone setting (FR-078). The user MUST be able to select a date display format from the following options: `YYYY/MM/DD`, `DD/MM/YYYY`, `MM/DD/YYYY`, `YYYY-MM-DD`, `DD-MM-YYYY`, `MM-DD-YYYY`. The default SHOULD be `YYYY-MM-DD` (ISO 8601). The selected format MUST be persisted in localStorage via the visualization store. The selected format MUST be applied consistently to all timestamp and date rendering across the dashboard, including the agent list, agent detail timeline, audit log, alerts, and dashboard charts.
+
+**Trace:** Settings - Visualization
+
+```gherkin
+Feature: Date Format Selection
+
+  Scenario: Select a date format
+    Given the user navigates to Settings > Visualization
+    When the user selects "DD/MM/YYYY" from the date format dropdown
+    Then all timestamps across the dashboard MUST render dates in DD/MM/YYYY format
+    And the date format dropdown MUST show "DD/MM/YYYY" as the active selection
+
+  Scenario: Date format persists across sessions
+    Given the user has selected "MM/DD/YYYY" as the date format
+    When the user closes and reopens the browser
+    Then the date format MUST remain "MM/DD/YYYY"
+    And all timestamps MUST render in MM/DD/YYYY format without requiring reconfiguration
+
+  Scenario: Date format applied to agent list timestamps
+    Given the user has selected "YYYY-MM-DD" as the date format
+    When the user navigates to the Agent Fleet list view
+    Then the "Last Attestation" column timestamps MUST render dates in YYYY-MM-DD format
+    And the "Registration Date" column timestamps MUST render dates in YYYY-MM-DD format
+
+  Scenario: Default date format on first visit
+    Given the user has never configured a date format preference
+    When the user navigates to any page displaying timestamps
+    Then timestamps SHOULD render dates in YYYY-MM-DD (ISO 8601) format
+    And the Settings > Visualization date format dropdown SHOULD show "YYYY-MM-DD" as the default
 ```
 
 ---
