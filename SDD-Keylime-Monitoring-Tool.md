@@ -116,9 +116,11 @@ This SDD uses the following IEEE 1016 viewpoints:
 
 ```text
 keylime-webtool-backend/src/
-+-- main.rs                    Application entry point, server bootstrap
++-- main.rs                    Application entry point, server bootstrap, config loading
++-- lib.rs                     Crate-level exports
 +-- state.rs                   Shared application state (AppState)
 +-- config.rs                  Hierarchical configuration loading
++-- settings_store.rs          TOML config file persistence (FR-075)
 +-- error.rs                   Centralized error handling (AppError)
 +-- api/
 |   +-- routes.rs              Route hierarchy and nesting
@@ -133,12 +135,13 @@ keylime-webtool-backend/src/
 |       +-- alerts.rs          Alert lifecycle (FR-047..FR-049)
 |       +-- audit.rs           Audit log queries (FR-042..FR-044)
 |       +-- compliance.rs      Compliance reporting (FR-059..FR-060)
-|       +-- integrations.rs    Backend connectivity (FR-057..FR-058)
+|       +-- integrations.rs    Backend connectivity with probes (FR-057..FR-058, FR-077)
 |       +-- performance.rs     System metrics (FR-064..FR-068)
+|       +-- settings.rs        Runtime URL and mTLS config (FR-072..FR-074)
 |       +-- auth.rs            Authentication endpoints (SR-001)
 +-- keylime/
-|   +-- client.rs              Keylime API client with circuit breaker
-|   +-- models.rs              Keylime API response types
+|   +-- client.rs              Keylime API client with circuit breaker and probes
+|   +-- models.rs              Keylime API response types (#[serde(default)])
 +-- auth/
 |   +-- jwt.rs                 JWT encode/decode (SR-010)
 |   +-- oidc.rs                OIDC client configuration (SR-001)
@@ -166,11 +169,11 @@ keylime-webtool-backend/src/
 ```text
 keylime-webtool-frontend/src/
 +-- main.tsx                   React DOM root, strict mode
-+-- App.tsx                    QueryClient + RouterProvider
++-- App.tsx                    QueryClient + RouterProvider, auto-refresh wiring
 +-- router.tsx                 Route definitions with Layout wrapper
-+-- index.css                  Global styles, CSS variables, theming
++-- index.css                  Global styles, CSS variables, dark/light theming
 +-- api/
-|   +-- client.ts              Axios instance, interceptors (envelope unwrap, 401 redirect)
+|   +-- client.ts              Axios instance, interceptors, Vite proxy, backend URL config
 |   +-- agents.ts              Agent API methods
 |   +-- attestations.ts        Attestation API methods
 |   +-- policies.ts            Policy API methods
@@ -179,11 +182,13 @@ keylime-webtool-frontend/src/
 |   +-- audit.ts               Audit log API methods
 |   +-- performance.ts         Performance API methods
 |   +-- compliance.ts          Compliance API methods
+|   +-- settings.ts            Settings API methods (FR-072, FR-073)
 +-- components/
 |   +-- Layout/
-|   |   +-- Layout.tsx         Two-column layout, resizable sidebar
+|   |   +-- Layout.tsx         Two-column layout, collapsible sidebar (FR-076)
+|   |   +-- Layout.css         Sidebar slide transition styles
 |   |   +-- Sidebar.tsx        Navigation with 10 modules
-|   |   +-- TopBar.tsx         Search, time range, theme toggle, user menu
+|   |   +-- TopBar.tsx         Hamburger toggle, search, theme toggle, user menu
 |   +-- common/
 |       +-- DataTable.tsx      Generic sortable, selectable table
 |       +-- KpiCard.tsx        Metric card with variant styling
@@ -194,26 +199,26 @@ keylime-webtool-frontend/src/
 |   +-- useWebSocket.ts        WebSocket hook with reconnection
 +-- store/
 |   +-- authStore.ts           Zustand auth state (SR-003)
-|   +-- visualizationStore.ts  Zustand UI preferences (FR-008)
+|   +-- visualizationStore.ts  Zustand UI preferences (FR-008), auto-refresh settings
 +-- types/
-|   +-- index.ts               Barrel exports, shared types
-|   +-- agent.ts               Agent domain types
+|   +-- index.ts               Barrel exports, shared types (IntegrationService.endpoint)
+|   +-- agent.ts               Agent domain types (includes start, saved states)
 |   +-- attestation.ts         Attestation domain types
 |   +-- policy.ts              Policy domain types
 |   +-- certificate.ts         Certificate domain types
 |   +-- alert.ts               Alert domain types
 |   +-- audit.ts               Audit domain types
 +-- pages/
-    +-- Dashboard/             Fleet overview with KPIs and charts (FR-001)
-    +-- Agents/                Agent list and detail (FR-012..FR-023)
+    +-- Dashboard/             Fleet overview with KPIs, charts, fallback KPIs (FR-001)
+    +-- Agents/                Agent list with error state, detail with timeline (FR-012..FR-023)
     +-- Attestations/          Attestation analytics (FR-024..FR-032)
-    +-- Policies/              Policy management (FR-033..FR-039)
+    +-- Policies/              Policy management with linked agent counts (FR-033..FR-039)
     +-- Certificates/          Certificate lifecycle (FR-050..FR-053)
     +-- Alerts/                Alert dashboard (FR-047..FR-049)
     +-- Performance/           System metrics (FR-064..FR-068)
     +-- AuditLog/              Audit trail with hash verification (FR-042)
-    +-- Integrations/          Backend status (FR-057..FR-058)
-    +-- Settings/              Visualization and config (FR-002, FR-006, FR-008)
+    +-- Integrations/          Backend + core services status with 1s polling (FR-057, FR-077)
+    +-- Settings/              Connection URLs, mTLS certs, mock/prod toggle (FR-072..FR-074)
     +-- Login/                 Authentication entry point (SR-001)
 ```
 
@@ -249,12 +254,13 @@ keylime-webtool-frontend/src/
 
 ```rust
 pub struct AppState {
-    pub keylime: Arc<KeylimeClient>,    // Keylime API client with circuit breaker
-    pub alert_store: Arc<AlertStore>,   // In-memory alert management
+    keylime_client: Arc<RwLock<Arc<KeylimeClient>>>,  // Hot-swappable Keylime API client (FR-072)
+    pub alert_store: Arc<AlertStore>,                  // In-memory alert management
+    pub settings_store: Arc<SettingsStore>,             // TOML config persistence (FR-075)
 }
 ```
 
-Both components are wrapped in `Arc` for thread-safe sharing across async tasks. `AppState` is cloned into every Axum handler via `State<AppState>` extractor.
+The `KeylimeClient` is wrapped in `Arc<RwLock<Arc<KeylimeClient>>>` to support hot-swapping at runtime: the outer `Arc` is shared across handlers, `RwLock` allows atomic replacement, and the inner `Arc` lets in-flight requests complete with the old client while new requests use the updated one. Handlers access the client via a `keylime()` accessor method. `SettingsStore` persists configuration changes to a TOML file on disk. `AppState` is cloned into every Axum handler via `State<AppState>` extractor.
 
 **Trace:** Implementation -- `keylime-webtool-backend/src/state.rs`
 
@@ -302,6 +308,8 @@ Both components are wrapped in `Arc` for thread-safe sharing across async tasks.
 #### 3.3.3 Agent State Enumeration
 
 **Pull-Mode States** (Keylime v2 API, `operational_state` integer):
+
+> **Note:** States `Start` (1) and `Saved` (2) are transient operational states recognized by both the backend and frontend. The backend uses `#[serde(default)]` on Keylime API model fields to tolerate missing or renamed fields across Keylime versions without breaking deserialization.
 
 | State | Value | Description |
 |-------|-------|-------------|
@@ -650,16 +658,21 @@ All list endpoints use a standard pagination wrapper inside `data`:
 |   +-- GET /reports/:framework  Framework report (FR-059)
 |   +-- POST /reports/:fw/export Export report (FR-060)
 +-- /integrations
-|   +-- GET /status              Backend connectivity (FR-057)
+|   +-- GET /status              Backend connectivity with probes (FR-057, FR-077)
 |   +-- GET /durable             Durable backends (FR-058)
 |   +-- GET /revocation-channels Revocation channels (FR-046)
 |   +-- GET /siem                SIEM status (FR-063)
 +-- /performance
-    +-- GET /verifiers           Verifier metrics (FR-064)
-    +-- GET /database            DB pool metrics (FR-065)
-    +-- GET /api-response-times  API latency (FR-066)
-    +-- GET /config              Live config + drift (FR-067)
-    +-- GET /capacity            Capacity projections (FR-068)
+|   +-- GET /verifiers           Verifier metrics (FR-064)
+|   +-- GET /database            DB pool metrics (FR-065)
+|   +-- GET /api-response-times  API latency (FR-066)
+|   +-- GET /config              Live config + drift (FR-067)
+|   +-- GET /capacity            Capacity projections (FR-068)
++-- /settings
+    +-- GET /keylime             Get Verifier/Registrar URLs (FR-072)
+    +-- PUT /keylime             Update Verifier/Registrar URLs (FR-072)
+    +-- GET /certificates        Get mTLS certificate config (FR-073)
+    +-- PUT /certificates        Update mTLS certificate config (FR-073)
 
 /ws
 +-- GET /events                  WebSocket real-time updates (NFR-021)
@@ -884,6 +897,8 @@ HALF_OPEN --[request fails]-----------> OPEN
 | `failure_threshold` | 5 | Consecutive failures to open circuit |
 | `reset_timeout` | 60s | Time before attempting recovery |
 
+**Health Probes (FR-077):** The `KeylimeClient` exposes `probe_verifier()` and `probe_registrar()` methods that perform lightweight HTTP status-code-only checks, bypassing the circuit breaker. These are used by the integrations health endpoint so connectivity status always reflects real reachability, even when the circuit breaker is open due to prior failures or response deserialization mismatches across Keylime versions.
+
 **Trace:** Implementation -- `keylime-webtool-backend/src/keylime/client.rs`
 
 #### 3.7.4 Audit Log Hash Chain
@@ -913,11 +928,11 @@ AppConfig
 |   +-- tls_cert: Option<PathBuf>
 |   +-- tls_key: Option<PathBuf>
 +-- keylime
-|   +-- verifier_url: String      // Default: "http://localhost:3000"
-|   +-- registrar_url: String     // Default: "http://localhost:3001"
-|   +-- mtls: Option<MtlsConfig>
+|   +-- verifier_url: String      // Default: "http://localhost:3000" (runtime-configurable, FR-072)
+|   +-- registrar_url: String     // Default: "http://localhost:3001" (runtime-configurable, FR-072)
+|   +-- mtls: Option<MtlsConfig>  // Runtime-configurable (FR-073)
 |   |   +-- cert: PathBuf
-|   |   +-- key: String           // HSM/Vault URI (SR-005, SR-006)
+|   |   +-- key: String           // HSM/Vault URI (SR-005, SR-006) or file path
 |   |   +-- ca_cert: PathBuf
 |   +-- timeout_secs: u64         // Default: 30
 |   +-- circuit_breaker
@@ -957,7 +972,9 @@ AppConfig
     +-- email: Option<EmailConfig>
 ```
 
-**Trace:** Implementation -- `keylime-webtool-backend/src/config.rs`
+**Configuration Persistence (FR-075):** At startup, configuration is loaded with priority: persisted TOML file > environment variables > compiled defaults. The TOML file path is resolved as: `KEYLIME_WEBTOOL_CONFIG` env var > `~/.config/keylime-webtool/settings.toml` > no persistence. File writes are atomic (temp file + rename) and run on `spawn_blocking` to avoid blocking the async runtime. Write failures log a warning but never fail the API request.
+
+**Trace:** Implementation -- `keylime-webtool-backend/src/config.rs`, `keylime-webtool-backend/src/settings_store.rs`
 
 #### 3.8.2 Frontend Configuration
 
@@ -966,12 +983,16 @@ AppConfig
 | `VITE_API_BASE_URL` | Backend API base URL | `""` (same origin) |
 | `VITE_WS_URL` | WebSocket server URL | `ws://${window.location.host}/ws` |
 
+The Backend URL is also runtime-configurable via the Settings page (FR-072). The `Axios` client reads the configured backend URL from localStorage and uses the Vite dev server proxy to avoid CORS failures during development.
+
 **Dev Server Proxy** (Vite):
 
-* `/api/*` -> `http://localhost:8080` (API backend)
+* `/api/*` -> `http://localhost:8080` (API backend, avoids CORS in dev mode)
 * `/ws/*` -> `ws://localhost:8080` (WebSocket)
 
-**Trace:** Implementation -- `keylime-webtool-frontend/vite.config.ts`
+**Auto-Refresh Wiring:** The `visualizationStore` `autoRefresh` and `refreshInterval` settings are connected to `QueryClient.setDefaultOptions({ queries: { refetchInterval } })` in `App.tsx`, so all TanStack React Query hooks automatically poll at the configured interval when auto-refresh is enabled.
+
+**Trace:** Implementation -- `keylime-webtool-frontend/vite.config.ts`, `keylime-webtool-frontend/src/App.tsx`
 
 #### 3.8.3 Cache TTL Strategy (NFR-019)
 
@@ -997,9 +1018,10 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | Rust (Axum) for backend | Memory safety without GC, `#![forbid(unsafe_code)]`, async performance for 10K WebSocket connections | SR-023, NFR-005 |
 | React + TypeScript for frontend | Type safety, component reuse, ecosystem maturity for SPA | NFR-004 |
 | Zustand for client state | Lightweight, no boilerplate, supports localStorage persistence for settings | FR-008 |
-| TanStack React Query for server state | Automatic cache invalidation, stale-while-revalidate, retry logic | NFR-001 |
+| TanStack React Query for server state | Automatic cache invalidation, stale-while-revalidate, retry logic; `refetchInterval` wired to auto-refresh settings | NFR-001, FR-006 |
 | In-memory AlertStore (pre-DB) | Enables full alert lifecycle development before TimescaleDB integration | FR-047 |
 | Circuit breaker on Keylime API | Prevents cascading failures when Verifier is overloaded or unreachable | NFR-017 |
+| Health probes bypass circuit breaker | Connectivity status must reflect real reachability, not circuit breaker state | FR-057, FR-077 |
 | Response envelope pattern | Consistent error handling, request tracing, frontend interceptor simplicity | -- |
 | SHA-256 hash chain for audit | Tamper detection without external dependencies; optional RFC 3161 anchoring | FR-061, SR-015 |
 | Certificate derivation from regcount | Keylime does not expose cert metadata; regcount correlates with troubled agents | FR-051 |
@@ -1007,6 +1029,11 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | RBAC UI enforcement via non-rendering | Controls absent (not disabled) for unauthorized roles; correct RBAC semantic | SR-003 |
 | localStorage for visualization settings | Settings survive page reload without server round-trip; theme applied before first render | FR-008 |
 | sessionStorage for JWT | Token isolated per browser tab; cleared on tab close | SR-010 |
+| `Arc<RwLock<Arc<KeylimeClient>>>` for hot-swap | Runtime URL/mTLS changes without restart; inner `Arc` lets in-flight requests complete | FR-072, FR-073 |
+| TOML config persistence with atomic writes | Settings survive restart; temp+rename prevents corruption; async-safe via `spawn_blocking` | FR-075 |
+| Vite proxy for backend health checks | Avoids CORS failures in dev mode when probing backend settings endpoint | FR-077 |
+| Mock/Production URL presets | Reduces configuration friction; auto-detects active mode from saved URLs | FR-074 |
+| `#[serde(default)]` on Keylime models | Tolerates missing/renamed fields across Keylime API versions without breaking deserialization | NFR-002 |
 
 ---
 
@@ -1091,11 +1118,17 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | FR-051 | 3.3.5 | Certificate expiry derivation from regcount |
 | FR-054 | 3.4.3 | `GET /api/attestations/pull-mode` |
 | FR-055 | 3.4.3 | `GET /api/attestations/push-mode` |
-| FR-057 | 3.4.3 | `GET /api/integrations/status` |
+| FR-057 | 3.4.3, 3.7.3 | `GET /api/integrations/status` with health probes |
 | FR-059 | 3.4.3 | `GET /api/compliance/frameworks`, `/reports/:framework` |
 | FR-061 | 3.3.8, 3.7.4 | Hash chain algorithm, audit logger |
 | FR-064 | 3.4.3 | `GET /api/performance/verifiers` |
 | FR-069 | 3.3.3, 3.4.3 | Agent state enumeration, `GET /api/attestations/state-machine` |
+| FR-072 | 3.3.1, 3.4.3, 3.8.1 | `Arc<RwLock<Arc<KeylimeClient>>>`, `GET/PUT /api/settings/keylime` |
+| FR-073 | 3.4.3, 3.8.1 | `GET/PUT /api/settings/certificates`, mTLS client reconstruction |
+| FR-074 | 3.2.2 | Settings page mock/production segmented control |
+| FR-075 | 3.8.1 | `SettingsStore`, TOML persistence with atomic writes |
+| FR-076 | 3.2.2 | Layout hamburger button, sidebar CSS transition |
+| FR-077 | 3.2.2, 3.7.3 | 1s polling via `refetchInterval`, `probe_verifier()`/`probe_registrar()` |
 
 ### 6.2 Non-Functional Requirements
 

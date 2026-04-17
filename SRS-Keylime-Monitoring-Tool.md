@@ -105,6 +105,12 @@ The System transforms Keylime from a CLI-driven security tool into a visual oper
 | FR-069 | Agent state machine visualization (pull + push) | MUST | Keylime - Agent State Machine / Push Mode |
 | FR-070 | API version distribution visualization | MUST | Integration Status - Backend Connectivity |
 | FR-071 | AI Assistant with Keylime MCP integration | SHOULD | AI Assistant - Conversational Interface |
+| FR-072 | Runtime Keylime connection URL configuration | MUST | Settings - Keylime Connection |
+| FR-073 | mTLS certificate configuration UI | MUST | Settings - Certificate Configuration |
+| FR-074 | Mock/Production environment toggle | MUST | Settings - Environment Switching |
+| FR-075 | TOML config file persistence for backend settings | MUST | Settings - Configuration Persistence |
+| FR-076 | Sidebar visibility toggle (hamburger button) | MUST | Dashboard - Navigation Structure |
+| FR-077 | Webtool backend health check with polling | MUST | Integration Status - Backend Connectivity |
 
 ### 2.2 Non-Functional Requirements
 
@@ -237,7 +243,7 @@ Feature: KPI Data Auto-Refresh
 
 ### FR-003: Sidebar Navigation
 
-**Description:** The System MUST provide a persistent sidebar navigation with the following modules: Dashboard (Fleet overview), Agents (Fleet management), Attestations (Analytics), Policies (IMA & MB), Certificates (TLS/TPM certs), Alerts (Alert lifecycle), Performance (System metrics), Audit Log (Security events), Integrations (Backend status), Settings (Configuration), and AI Assistant (Keylime MCP conversational interface).
+**Description:** The System MUST provide a persistent sidebar navigation with the following modules: Dashboard (Fleet overview), Agents (Fleet management), Attestations (Analytics), Policies (IMA & MB), Certificates (TLS/TPM certs), Alerts (Alert lifecycle), Performance (System metrics), Audit Log (Security events), Integrations (Backend status), Settings (Configuration), and AI Assistant (Keylime MCP conversational interface). The sidebar MUST be collapsible via a hamburger toggle button in the top bar (FR-076), with a smooth CSS transition animation.
 
 **Trace:** Dashboard - Navigation Structure
 
@@ -260,6 +266,17 @@ Feature: Sidebar Navigation
     When the user attempts to access any dashboard view
     Then the System MUST redirect the user to the login page
     And no sidebar navigation MUST be rendered
+
+  Scenario: Toggle sidebar visibility
+    Given the user is authenticated and the sidebar is visible
+    When the user clicks the hamburger button in the top bar
+    Then the sidebar MUST slide out of view with a smooth transition
+    And the main content area MUST expand to fill the available width
+
+  Scenario: Restore sidebar visibility
+    Given the sidebar is hidden
+    When the user clicks the hamburger button in the top bar
+    Then the sidebar MUST slide back into view with a smooth transition
 ```
 
 ### FR-004: Global Agent Search
@@ -325,7 +342,7 @@ Feature: Time Range Selector
 
 ### FR-006: Auto-Refresh Toggle
 
-**Description:** The System MUST provide a toggle control that enables or disables live automatic updates of dashboard data.
+**Description:** The System MUST provide a toggle control that enables or disables live automatic updates of dashboard data. When enabled, the auto-refresh setting and configurable interval MUST be wired to the data fetching layer (TanStack React Query `refetchInterval`) so that all queries automatically poll the backend. The auto-refresh interval MUST be configurable via the Settings page visualization settings.
 
 **Trace:** Dashboard - Navigation Structure
 
@@ -342,6 +359,12 @@ Feature: Auto-Refresh Toggle
     Given auto-refresh is currently disabled
     When the user toggles auto-refresh on
     Then dashboard data MUST begin refreshing at the configured interval
+
+  Scenario: Auto-refresh interval drives all queries
+    Given auto-refresh is enabled with a 10-second interval
+    When the user navigates to any data-driven page
+    Then all data queries on that page MUST poll the backend every 10 seconds
+    And stale data MUST be automatically replaced with fresh data
 ```
 
 ### FR-007: Data Export
@@ -378,7 +401,7 @@ Feature: Data Export
 
 ### FR-008: Dark/Light Mode
 
-**Description:** The System MAY provide a theme preference toggle allowing users to switch between dark and light visual modes.
+**Description:** The System MUST provide a theme toggle button in the top bar allowing users to switch between dark and light visual modes. The theme MUST apply consistently across all pages, including top bar inputs, agent lists, alert tables, policy views, and all form controls. The preference MUST persist across sessions via localStorage.
 
 **Trace:** Dashboard - Navigation Structure
 
@@ -387,9 +410,20 @@ Feature: Dark/Light Mode
 
   Scenario: Switch to dark mode
     Given the user is viewing the dashboard in light mode
-    When the user selects "Dark Mode" in the theme settings
-    Then the entire dashboard UI SHOULD render with a dark color scheme
-    And the preference SHOULD persist across sessions
+    When the user clicks the theme toggle button in the top bar
+    Then the entire dashboard UI MUST render with a dark color scheme
+    And the preference MUST persist across sessions via localStorage
+
+  Scenario: Switch to light mode
+    Given the user is viewing the dashboard in dark mode
+    When the user clicks the theme toggle button in the top bar
+    Then the entire dashboard UI MUST render with the default light color scheme
+
+  Scenario: Dark mode text visibility
+    Given the user has selected dark mode
+    When the user navigates to any page
+    Then all text, form inputs, table headers, and chart labels MUST be visible against the dark background
+    And top bar search input text MUST be legible
 ```
 
 ### FR-009: In-App Notification System
@@ -471,7 +505,7 @@ Feature: Configurable Alert Thresholds
 
 ### FR-012: Agent Fleet List View
 
-**Description:** The System MUST display agents in a sortable, paginated table with columns: Agent ID, IP Address, Operational State, Last Attestation time, Assigned Policy, Failure Count, and Actions. Rows for agents in FAILED or INVALID_QUOTE states MUST be visually highlighted. Rows for agents in RETRY state MUST be highlighted with a warning indicator.
+**Description:** The System MUST display agents in a sortable, paginated table with columns: Agent ID, IP Address, Operational State, Last Attestation time, Assigned Policy, Failure Count, and Actions. Rows for agents in FAILED or INVALID_QUOTE states MUST be visually highlighted. Rows for agents in RETRY state MUST be highlighted with a warning indicator. The System MUST recognize all Keylime operational states including `Start` (1) and `Saved` (2). When the agent list fails to load, the System MUST display a descriptive error message instead of an empty table.
 
 **Trace:** Agent Fleet - List View
 
@@ -484,6 +518,7 @@ Feature: Agent Fleet List View
     Then agents in GET_QUOTE state MUST display with a success indicator
     And agents in FAILED state MUST display with a critical/danger indicator
     And agents in RETRY state MUST display with a warning indicator
+    And agents in START or SAVED state MUST display with an informational indicator
     And each row MUST show Agent ID, IP, State, Last Attest, Policy, Failures, and Actions
 
   Scenario: Verifier API unavailable for agent list
@@ -491,6 +526,18 @@ Feature: Agent Fleet List View
     When the user navigates to the Agent Fleet view
     Then the System MUST display cached agent data with a staleness indicator
     And a banner MUST warn that the agent list may not reflect current state
+
+  Scenario: Agent list API returns error
+    Given the backend API returns an error when fetching the agent list
+    When the user navigates to the Agent Fleet view
+    Then the System MUST display a descriptive error message explaining the failure
+    And the System MUST NOT display an empty table without explanation
+
+  Scenario: Filter agents by policy via Policies page link
+    Given the user is viewing the Policies page
+    When the user clicks the agent count link for policy "production-v2"
+    Then the System MUST navigate to the Agents page with a policy filter applied
+    And only agents assigned to "production-v2" MUST be displayed
 ```
 
 ### FR-013: Agent List Pagination
@@ -1657,12 +1704,24 @@ Feature: Mixed Mode Unified Views
 
 ### FR-057: Backend Connectivity Status Dashboard
 
-**Description:** The System MUST display a real-time connectivity status dashboard for all Keylime backend services. Monitored services MUST include: Core Services (Verifier, Registrar) with endpoint address, UP/DOWN/HIGH LOAD status, and uptime; Database Backends (Verifier DB, Registrar DB) with average query time and migration revision; Durable Attestation Backends (Rekor, Redis, RFC 3161 TSA) with latency and connection state; and Notification Channels (ZeroMQ, Webhook, Agent notifications) with delivery status. Each service MUST display a health indicator (green/yellow/red).
+**Description:** The System MUST display a real-time connectivity status dashboard for all backend services. Monitored services MUST include: Webtool Backend (the dashboard's own backend) with UP/DOWN status via settings endpoint probe (FR-077); Core Services (Verifier, Registrar) with their configured endpoint URLs, UP/DOWN/HIGH LOAD status, and uptime; Database Backends (Verifier DB, Registrar DB) with average query time and migration revision; Durable Attestation Backends (Rekor, Redis, RFC 3161 TSA) with latency and connection state; and Notification Channels (ZeroMQ, Webhook, Agent notifications) with delivery status. Each service MUST display a health indicator (green/yellow/red). Core Services health checks MUST use lightweight HTTP probes that bypass the circuit breaker to reflect real connectivity status even when the circuit breaker is open. The connectivity status endpoint MUST report the real configured service URLs instead of placeholder values.
 
 **Trace:** Integration Status - Backend Connectivity
 
 ```gherkin
 Feature: Backend Connectivity Status
+
+  Scenario: Display webtool backend connectivity
+    Given the webtool backend is running at http://localhost:8080
+    When the user navigates to the Integration Status view
+    Then the "Webtool Backend" section MUST show status "UP" with a green indicator
+    And the backend URL MUST be displayed
+
+  Scenario: Webtool backend unreachable
+    Given the webtool backend is not reachable
+    When the user navigates to the Integration Status view
+    Then the "Webtool Backend" section MUST show status "DOWN" with a red indicator
+    And the Core Services, Attestation Backends, and Notification Channels sections MUST be disabled
 
   Scenario: Display core service connectivity
     Given the Verifier is running at 10.0.0.1:8881 with 45 days uptime
@@ -1670,6 +1729,13 @@ Feature: Backend Connectivity Status
     When the user navigates to the Integration Status view
     Then the Verifier (10.0.0.1:8881) MUST show status "UP" with uptime "45d"
     And the Verifier-02 (10.0.0.3:8881) MUST show status "HIGH LOAD" with a yellow indicator
+
+  Scenario: Core service health check bypasses circuit breaker
+    Given the Verifier circuit breaker is in OPEN state
+    And the Verifier service has recovered and is now reachable
+    When the Integration Status view polls the connectivity endpoint
+    Then the Verifier MUST show status "UP"
+    And the probe MUST NOT be blocked by the circuit breaker
 
   Scenario: Alert on backend service failure
     Given the RFC 3161 TSA at tsa.example.com is configured
@@ -1682,6 +1748,13 @@ Feature: Backend Connectivity Status
     When the user navigates to the Integration Status view
     Then all services MUST show green health indicators
     And no alerts MUST be displayed for backend connectivity
+
+  Scenario: Auto-recover when backend comes back
+    Given the webtool backend was previously unreachable
+    And the Core Services sections were disabled
+    When the backend becomes reachable again
+    Then the "Webtool Backend" section MUST show status "UP"
+    And the Core Services sections MUST be re-enabled automatically
 ```
 
 ### FR-058: Durable Attestation Backend Monitoring
@@ -2122,6 +2195,196 @@ Feature: AI Assistant with Keylime MCP
     Given the user is not authenticated
     When the user attempts to access the AI Assistant route
     Then the System MUST redirect the user to the login page
+```
+
+### FR-072: Runtime Keylime Connection URL Configuration
+
+**Description:** The System MUST allow runtime configuration of the Keylime Verifier URL, Registrar URL, and Webtool Backend URL via the Settings page. Changes MUST be persisted via the backend settings API (`GET/PUT /api/settings/keylime`) and applied without requiring a server restart. The backend MUST use a hot-swappable `KeylimeClient` wrapped in `Arc<RwLock<Arc<KeylimeClient>>>` so all handlers use the updated URLs immediately. After saving, the frontend MUST invalidate all integration queries so connectivity status reflects the new configuration, and MUST trigger a full page reload to refresh all cached data.
+
+**Trace:** Settings - Keylime Connection
+
+```gherkin
+Feature: Runtime Keylime Connection Configuration
+
+  Scenario: Configure Verifier and Registrar URLs
+    Given the user is on the Settings page
+    When the user updates the Verifier URL to "https://verifier.prod:8881"
+    And the user updates the Registrar URL to "https://registrar.prod:8891"
+    And the user clicks "Apply Changes"
+    Then the backend MUST update its Keylime client with the new URLs
+    And the Integration Status page MUST reflect the new endpoint addresses
+    And the page MUST reload to refresh all cached data
+
+  Scenario: Configure Backend URL
+    Given the user is on the Settings page
+    When the user updates the Backend URL to "http://backend.prod:8080"
+    And the user clicks "Apply Changes"
+    Then all subsequent API requests MUST be directed to the new backend URL
+
+  Scenario: HTTP scheme warning for Keylime URLs
+    Given the user enters a Verifier URL using "http://" instead of "https://"
+    When the URL field loses focus
+    Then the System MUST display a warning indicating unencrypted communication
+
+  Scenario: Apply Changes button state
+    Given no connection URL fields have been modified
+    Then the "Apply Changes" button MUST be disabled
+    When the user modifies any connection URL
+    Then the "Apply Changes" button MUST be enabled
+```
+
+### FR-073: mTLS Certificate Configuration UI
+
+**Description:** The System MUST provide a certificate settings section on the Settings page for configuring mTLS client certificates used to communicate with Keylime APIs. Two input modes MUST be supported: "By directory" (a single directory path, with standard Keylime filenames `client-cert.crt`, `client-private.pem`, `cacert.crt` assumed) and "Manually" (individual paths for certificate, private key, and CA certificate files). The mode MUST be auto-detected from saved settings. The Apply button MUST be disabled when no changes exist and MUST display backend error messages on failure. Certificate configuration MUST be persisted via the backend settings API (`GET/PUT /api/settings/certificates`) and applied at runtime by reconstructing the mTLS reqwest client.
+
+**Trace:** Settings - Certificate Configuration
+
+```gherkin
+Feature: mTLS Certificate Configuration
+
+  Scenario: Configure certificates by directory
+    Given the user is on the Settings page certificate section
+    When the user selects "By directory" mode
+    And enters the directory path "/etc/keylime/certs"
+    And clicks "Apply"
+    Then the backend MUST construct mTLS client using:
+      - Certificate: /etc/keylime/certs/client-cert.crt
+      - Private key: /etc/keylime/certs/client-private.pem
+      - CA certificate: /etc/keylime/certs/cacert.crt
+    And the Keylime API client MUST be reconstructed with the new certificates
+
+  Scenario: Configure certificates manually
+    Given the user is on the Settings page certificate section
+    When the user selects "Manually" mode
+    And enters individual paths for certificate, key, and CA files
+    And clicks "Apply"
+    Then the backend MUST construct mTLS client using the specified file paths
+
+  Scenario: Auto-detect input mode from saved settings
+    Given the backend has saved certificate paths from a "By directory" configuration
+    When the user navigates to the Settings page
+    Then the certificate section MUST auto-detect and display "By directory" mode
+
+  Scenario: Display backend error on invalid certificate
+    Given the user enters a path to a certificate file that does not exist
+    When the user clicks "Apply"
+    Then the System MUST display the error message returned by the backend
+    And the previous certificate configuration MUST remain active
+```
+
+### FR-074: Mock/Production Environment Toggle
+
+**Description:** The System MUST provide a segmented control on the Settings page that switches all three connection URLs (Backend, Verifier, Registrar) between mock and production default values. The toggle MUST auto-detect the active mode from saved URLs on page load. Selecting a mode MUST populate all URL fields with the corresponding defaults. The user MUST still click "Apply Changes" to persist the switch.
+
+**Trace:** Settings - Environment Switching
+
+```gherkin
+Feature: Mock/Production Environment Toggle
+
+  Scenario: Switch to mock environment
+    Given the user is on the Settings page
+    And the current environment is detected as "Production"
+    When the user selects "Mock" in the environment toggle
+    Then the Backend URL field MUST be populated with the mock default
+    And the Verifier URL field MUST be populated with the mock default
+    And the Registrar URL field MUST be populated with the mock default
+    And the user MUST click "Apply Changes" to persist the change
+
+  Scenario: Switch to production environment
+    Given the user is on the Settings page
+    And the current environment is detected as "Mock"
+    When the user selects "Production" in the environment toggle
+    Then all URL fields MUST be populated with production defaults
+
+  Scenario: Auto-detect environment on page load
+    Given the saved Backend, Verifier, and Registrar URLs match mock defaults
+    When the user navigates to the Settings page
+    Then the environment toggle MUST show "Mock" as the active mode
+```
+
+### FR-075: TOML Config File Persistence for Backend Settings
+
+**Description:** The System MUST persist backend configuration changes (Verifier/Registrar URLs, mTLS certificate paths) to a TOML file on disk so they survive backend restarts. At startup, the configuration MUST be loaded with priority: persisted TOML file > environment variables > compiled defaults. File writes MUST be atomic (write to temporary file, then rename) and MUST run on a blocking thread to avoid stalling the async runtime. Write failures MUST log a warning but MUST NOT fail the API request. The config path MUST be resolved as: `KEYLIME_WEBTOOL_CONFIG` environment variable > `~/.config/keylime-webtool/settings.toml` > no persistence (in-memory only).
+
+**Trace:** Settings - Configuration Persistence
+
+```gherkin
+Feature: TOML Configuration Persistence
+
+  Scenario: Settings survive backend restart
+    Given the user has configured Verifier URL to "https://verifier.prod:8881"
+    And the setting is persisted to the TOML file
+    When the backend is restarted
+    Then the Verifier URL MUST be loaded from the TOML file
+    And the System MUST use "https://verifier.prod:8881" without manual reconfiguration
+
+  Scenario: Configuration priority order
+    Given the TOML file sets Verifier URL to "https://file.example:8881"
+    And the environment variable KEYLIME_VERIFIER_URL is set to "https://env.example:8881"
+    When the backend starts
+    Then the Verifier URL MUST be "https://file.example:8881" (TOML file takes precedence)
+
+  Scenario: Atomic file write
+    Given the user saves a new configuration
+    When the backend writes the TOML file
+    Then the write MUST use a temporary file and rename strategy
+    And a crash during write MUST NOT corrupt the existing configuration file
+
+  Scenario: Write failure does not fail API request
+    Given the TOML file path is not writable (e.g., read-only filesystem)
+    When the user saves configuration via the settings API
+    Then the API request MUST return success (settings applied in-memory)
+    And a warning MUST be logged indicating persistence failure
+```
+
+### FR-076: Sidebar Visibility Toggle (Hamburger Button)
+
+**Description:** The System MUST provide a hamburger button (three horizontal lines) in the top bar, positioned to the left of the search bar, that toggles the sidebar's visibility. When toggled off, the sidebar MUST slide out of view with a smooth CSS transition. When toggled on, the sidebar MUST slide back into view. The main content area MUST adjust its width accordingly.
+
+**Trace:** Dashboard - Navigation Structure
+
+```gherkin
+Feature: Sidebar Visibility Toggle
+
+  Scenario: Hide sidebar via hamburger button
+    Given the sidebar is visible
+    When the user clicks the hamburger button in the top bar
+    Then the sidebar MUST slide out of view with a smooth CSS transition
+    And the main content area MUST expand to use the full width
+
+  Scenario: Show sidebar via hamburger button
+    Given the sidebar is hidden
+    When the user clicks the hamburger button in the top bar
+    Then the sidebar MUST slide into view with a smooth CSS transition
+    And the main content area MUST shrink to its normal width
+```
+
+### FR-077: Webtool Backend Health Check with Polling
+
+**Description:** The System MUST provide a "Webtool Backend" section on the Integrations page that pings the backend settings endpoint to detect backend availability. Both the backend health check and the Core Services (Verifier/Registrar) health queries MUST use a 1-second `refetchInterval` for near-instant outage detection. When the backend is unreachable, the Integrations sections (Core Services, Attestation Backends, Notification Channels) MUST be disabled and auto-recover when the backend becomes available again.
+
+**Trace:** Integration Status - Backend Connectivity
+
+```gherkin
+Feature: Webtool Backend Health Check
+
+  Scenario: Backend health check polling
+    Given the webtool backend is reachable
+    When the user is viewing the Integrations page
+    Then the frontend MUST poll the backend settings endpoint every 1 second
+    And the "Webtool Backend" section MUST show "UP" with a green indicator
+
+  Scenario: Detect backend outage within 1 second
+    Given the user is viewing the Integrations page
+    And the backend becomes unreachable
+    Then within 1 second the "Webtool Backend" section MUST show "DOWN" with a red indicator
+    And the Core Services, Attestation Backends, and Notification Channels sections MUST be disabled
+
+  Scenario: Auto-recover after backend outage
+    Given the webtool backend was unreachable and sections were disabled
+    When the backend becomes reachable again
+    Then the "Webtool Backend" section MUST show "UP" within 1 second
+    And the disabled sections MUST be re-enabled automatically
 ```
 
 ---
@@ -3318,5 +3581,10 @@ The design details that realize these requirements -- including component decomp
 | IR-011: Frontend RBAC Enforcement | 5.1 | Security Overlay |
 | IR-012: Visualization Settings | 3.8.2 | Resource View |
 | IR-013: KPI Fallback Computation | 3.7.2 | Algorithm View |
+| IR-014: Runtime Connection Configuration | 3.3.1, 3.4.3, 3.8.1 | Logical / Interface / Resource View |
+| IR-015: mTLS Certificate Configuration | 3.4.3, 3.8.1 | Interface / Resource View |
+| IR-016: TOML Config Persistence | 3.8.1 | Resource View |
+| IR-017: Sidebar Visibility Toggle | 3.2.2 | Composition View |
+| IR-018: Backend Health Probes | 3.7.3 | Algorithm View |
 
 The SDD also includes a full SRS traceability matrix (Section 6) mapping every implemented requirement to its corresponding design element.
