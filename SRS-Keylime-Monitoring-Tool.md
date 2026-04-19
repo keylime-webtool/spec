@@ -2092,7 +2092,7 @@ Feature: Capacity Planning Projections
 
 ### FR-069: Agent State Machine Visualization
 
-**Description:** The System MUST provide visual state machine diagrams for agent lifecycle states. Pull mode (v2 API) MUST display all 10 states: REGISTERED (0), START (1), SAVED (2), GET_QUOTE (3), RETRY (4), PROVIDE_V (5), FAILED (7), TERMINATED (8), INVALID_QUOTE (9), and TENANT_FAILED (10) with transition arrows. Push mode (v3 API) MUST display three computed states: PASS (100), FAIL (101), and PENDING (102), derived from the agent's attestation results. The push-mode verification flow follows 3 stages: capabilities submission, challenge/nonce response, and evidence evaluation. Failed states MUST be visually distinguished (e.g., red). The current state distribution across the fleet MUST be overlaid on the diagram.
+**Description:** The System MUST provide visual state machine diagrams for agent lifecycle states. Pull mode (v2 API) MUST display all 10 states: REGISTERED (0), START (1), SAVED (2), GET_QUOTE (3), RETRY (4), PROVIDE_V (5), FAILED (7), TERMINATED (8), INVALID_QUOTE (9), and TENANT_FAILED (10) with transition arrows. Push mode (v3 API) MUST display four computed states: PASS (100), FAIL (101), PENDING (102), and TIMEOUT (103), derived from the agent's attestation results. TIMEOUT indicates an agent that has stopped submitting attestations (e.g., agent crash), distinguishing it from an explicit attestation FAIL. The push-mode verification flow follows 3 stages: capabilities submission, challenge/nonce response, and evidence evaluation. Failed and timed-out states MUST be visually distinguished (e.g., red). The current state distribution across the fleet MUST be overlaid on the diagram.
 
 **Trace:** Keylime - Agent State Machine; Attestation Modes - Push Mode
 
@@ -2110,9 +2110,17 @@ Feature: Agent State Machine Visualization
   Scenario: Display push mode computed states
     Given the deployment includes push mode (v3 API) agents
     When the user views the push mode state visualization
-    Then three computed states MUST be displayed: PASS (100), FAIL (101), and PENDING (102)
+    Then four computed states MUST be displayed: PASS (100), FAIL (101), PENDING (102), and TIMEOUT (103)
     And each state MUST show the current count of agents in that state
     And the 3-stage verification flow (capabilities → challenge → evidence) MUST be shown alongside
+
+  Scenario: Agent enters TIMEOUT state when it stops responding
+    Given a push mode agent was previously in PASS state
+    And the agent has not submitted attestations beyond the expected interval
+    When the System detects the absence of attestation submissions
+    Then the agent state MUST transition to TIMEOUT (103)
+    And the TIMEOUT state MUST be visually distinguished (e.g., red) from PASS and PENDING
+    And the TIMEOUT state MUST be distinguishable from FAIL to indicate the agent stopped responding rather than failing attestation
 
   Scenario: No agents in a specific state
     Given no agents are in FAILED state

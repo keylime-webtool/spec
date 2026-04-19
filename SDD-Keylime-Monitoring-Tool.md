@@ -331,6 +331,7 @@ The `KeylimeClient` is wrapped in `Arc<RwLock<Arc<KeylimeClient>>>` to support h
 | `Pass` | 100 | Attestation passing |
 | `Fail` | 101 | Attestation failing |
 | `Pending` | 102 | Awaiting first attestation |
+| `Timeout` | 103 | Agent stopped responding (e.g., agent crash) |
 
 **Trace:** Implementation -- `keylime-webtool-backend/src/models/agent.rs`, SRS FR-069
 
@@ -856,7 +857,7 @@ The attestation timeline (FR-024) distributes event counts across hourly buckets
 
 1. Count total successful and failed agents from Verifier state.
    * Pull-mode: `GET_QUOTE` = success; `FAILED`, `INVALID_QUOTE`, `TENANT_FAILED` = failure.
-   * Push-mode: `accept_attestations` flag determines pass/fail.
+   * Push-mode: `accept_attestations` flag determines pass/fail; absence of attestation submissions beyond the expected interval determines timeout.
 2. Compute the number of hourly buckets from the requested time range.
 3. Generate per-bucket weights:
    `weight(i) = (1 + 0.5 * sin(i * 0.9)) * jitter(i)`
@@ -875,7 +876,7 @@ The frontend derives attestation KPIs from agent state data when no attestation 
 | KPI | Computation |
 |-----|------------|
 | Total Agents | `paginated_response.total_items` or `agents.length` |
-| Failed Attestations | Count of agents in `failed`, `invalid_quote`, `tenant_failed` (pull) or `fail` (push) state |
+| Failed Attestations | Count of agents in `failed`, `invalid_quote`, `tenant_failed` (pull) or `fail`, `timeout` (push) state |
 | Success Rate | `((total - failed) / total) * 100` |
 | Active Alerts | From `GET /api/alerts/summary` -> `critical` count |
 
