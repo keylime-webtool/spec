@@ -1105,7 +1105,7 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | FR-011 | 3.4.3 | `PUT /api/alerts/thresholds` |
 | FR-012 | 3.3.2, 3.4.3 | Agent summary model, `GET /api/agents` |
 | FR-013 | 3.4.2 | Paginated response format |
-| FR-014 | 3.4.3 | Agent list query params (state, ip, uuid, policy, min_failures) |
+| FR-014 | 3.4.3 | Agent list query params (state, ip, uuid, policy, min_failures); state filter grouped by Pull Mode (8 states) and Push Mode (4 states incl. Timeout) |
 | FR-016 | 3.4.3 | `POST /api/agents/bulk` |
 | FR-018 | 3.3.2, 3.4.3 | Full agent model, `GET /api/agents/:id` |
 | FR-019 | 3.4.3, 3.6.1 | `POST /api/agents/:id/actions/:action` |

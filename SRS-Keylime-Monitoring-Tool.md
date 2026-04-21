@@ -514,7 +514,7 @@ Feature: Configurable Alert Thresholds
 
 ### FR-012: Agent Fleet List View
 
-**Description:** The System MUST display agents in a sortable, paginated table with columns: Agent ID, IP Address, Operational State, Last Attestation time, Assigned Policy, Failure Count, and Actions. Rows for agents in FAILED or INVALID_QUOTE states MUST be visually highlighted. Rows for agents in RETRY state MUST be highlighted with a warning indicator. The System MUST recognize all Keylime operational states including `Start` (1) and `Saved` (2). When the agent list fails to load, the System MUST display a descriptive error message instead of an empty table.
+**Description:** The System MUST display agents in a sortable, paginated table with columns: Agent ID, IP Address, Operational State, Last Attestation time, Assigned Policy, Failure Count, and Actions. Rows for agents in FAILED or INVALID_QUOTE states MUST be visually highlighted. Rows for agents in RETRY state MUST be highlighted with a warning indicator. For push-mode (v3 API) agents, rows in FAIL (101) or TIMEOUT (103) states MUST be highlighted with a critical indicator. The System MUST recognize all Keylime operational states including `Start` (1) and `Saved` (2) for pull mode, and `Pass` (100), `Fail` (101), `Pending` (102), and `Timeout` (103) for push mode. When the agent list fails to load, the System MUST display a descriptive error message instead of an empty table.
 
 **Trace:** Agent Fleet - List View
 
@@ -528,6 +528,9 @@ Feature: Agent Fleet List View
     And agents in FAILED state MUST display with a critical/danger indicator
     And agents in RETRY state MUST display with a warning indicator
     And agents in START or SAVED state MUST display with an informational indicator
+    And push-mode agents in PASS state MUST display with a success indicator
+    And push-mode agents in FAIL or TIMEOUT state MUST display with a critical indicator
+    And push-mode agents in PENDING state MUST display with an informational indicator
     And each row MUST show Agent ID, IP, State, Last Attest, Policy, Failures, and Actions
 
   Scenario: Verifier API unavailable for agent list
@@ -575,7 +578,7 @@ Feature: Agent List Pagination
 
 ### FR-014: Advanced Multi-Criteria Agent Filtering
 
-**Description:** The System MUST allow filtering the agent fleet by multiple criteria simultaneously: Agent UUID (exact or partial), IP Address (CIDR range), Operational State (multi-select), Verifier Assignment, IMA Policy, MB Policy, Last Attestation time range, Failure Count (min/max), Registration Date range, and API Version.
+**Description:** The System MUST allow filtering the agent fleet by multiple criteria simultaneously: Agent UUID (exact or partial), IP Address (CIDR range), Operational State (multi-select), Verifier Assignment, IMA Policy, MB Policy, Last Attestation time range, Failure Count (min/max), Registration Date range, and API Version. The Operational State filter MUST present all pull-mode states (Get Quote, Provide V, Registered, Failed, Retry, Terminated, Invalid Quote, Tenant Failed) and all push-mode states (Pass, Fail, Pending, Timeout) grouped by mode.
 
 **Trace:** Agent Fleet - Filtering and Search
 
@@ -593,6 +596,12 @@ Feature: Advanced Agent Filtering
     When the user selects state filter "TERMINATED" and no agents are in that state
     Then the agent list MUST display an empty state with message "No agents match the selected filters"
     And a "Clear Filters" button MUST be available
+
+  Scenario: Filter by push-mode Timeout state
+    Given the fleet contains push-mode agents in PASS, FAIL, PENDING, and TIMEOUT states
+    When the user selects state filter "TIMEOUT" from the Push Mode group
+    Then only agents in TIMEOUT (103) state MUST be displayed
+    And pull-mode agents MUST be hidden
 
   Scenario: Filter by failure count threshold
     Given the fleet contains agents with failure counts 0, 1, 3, 5
