@@ -1146,6 +1146,7 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | FR-082 | 3.2.2 | Failure categorization list renders agent UUIDs as React Router `<Link>` to `/agents/{agent_id}` detail page |
 | FR-083 | 3.4.3 | Raw Data tab: compact copy icon button to the right of source selector group; Clipboard API with 2s checkmark feedback |
 | FR-084 | 3.2.2 | `KpiCard.tsx`: optional `linkTo` prop wraps card in React Router `<Link>`; Dashboard page maps each KPI to its target route (e.g., Failed Agents → `/agents?state=failed,invalid_quote,tenant_failed`) |
+| FR-085 | 3.2.2 | `Alerts.tsx`: three Recharts donut `PieChart` components below alert table — By Severity, By Type, By State; clickable segments navigate to `/alerts?{dimension}={value}` with filter pre-applied; color maps match Dashboard alert chart (FR-047) |
 
 ### 6.2 Non-Functional Requirements
 

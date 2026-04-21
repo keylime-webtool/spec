@@ -118,6 +118,7 @@ The System transforms Keylime from a CLI-driven security tool into a visual oper
 | FR-082 | Agent ID hyperlinks in failure categorization list | MUST | Attestation Analytics - Failure Categorization |
 | FR-083 | Copy-to-clipboard button in Raw Data source selector toolbar | MUST | Agent Detail - Raw Data |
 | FR-084 | Fleet Overview KPI card drill-down navigation | SHOULD | Dashboard - Key Performance Indicators |
+| FR-085 | Alert Center distribution pie charts (by severity, type, state) | MUST | Revocation - Alert Workflow |
 
 ### 2.2 Non-Functional Requirements
 
@@ -2673,6 +2674,39 @@ Feature: Fleet Overview KPI Card Drill-Down Navigation
     When the user hovers over any KPI card
     Then the card MUST display a pointer cursor
     And the card SHOULD display a hover highlight effect
+```
+
+### FR-085: Alert Center Distribution Pie Charts
+
+**Description:** The Alert Center page MUST display three donut pie charts below the alert table, showing the distribution of alerts by severity, by type, and by state. Each chart MUST use color-coded segments matching the alert taxonomy. Clicking a chart segment MUST navigate the user to the Alert Center with the corresponding filter pre-applied (e.g., clicking the "critical" segment applies `?severity=critical`). The charts MUST update reactively when the alert data changes.
+
+**Trace:** Revocation - Alert Workflow; FR-047
+
+```gherkin
+Feature: Alert Center Distribution Pie Charts
+
+  Scenario: Three pie charts render below the alert table
+    Given the user is viewing the Alert Center page
+    And there are alerts of mixed severity, type, and state
+    Then the System MUST display three pie charts labeled "By Severity", "By Type", and "By State"
+    And each chart MUST render one segment per distinct value in its dimension
+
+  Scenario: Severity pie chart shows correct distribution
+    Given there are 2 critical, 2 warning, and 2 info alerts
+    When the user views the "By Severity" pie chart
+    Then the chart MUST show three segments with counts 2, 2, and 2
+    And the critical segment MUST be colored red (#ea4335)
+
+  Scenario: Click pie chart segment applies filter
+    Given the user is viewing the Alert Center page
+    When the user clicks the "warning" segment in the "By Severity" chart
+    Then the URL MUST update to include "severity=warning"
+    And the alert table MUST filter to show only warning alerts
+
+  Scenario: Empty state when no alerts exist
+    Given there are no alerts in the system
+    When the user views the Alert Center page
+    Then each pie chart MUST display a "No data" placeholder
 ```
 
 ---
