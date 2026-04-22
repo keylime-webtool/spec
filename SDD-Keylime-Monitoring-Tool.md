@@ -829,7 +829,7 @@ New --> Acknowledged --> UnderInvestigation --> Resolved
 
 **Terminal States:** `Resolved` and `Dismissed` reject all further transitions.
 
-**Summary Computation:** The `critical`, `warnings`, and `info` counters returned by `GET /api/alerts/summary` count **all** alerts of their respective severity regardless of lifecycle state (including `Resolved` and `Dismissed`), matching the totals shown in the Alert Center list. The Dashboard "Active Alerts" KPI sums only **active** (non-terminal) `critical + warnings` to represent alerts currently needing attention. All three severity counters are returned by `GET /api/alerts/summary`.
+**Summary Computation:** The `critical`, `warnings`, and `info` counters returned by `GET /api/alerts/summary` count **all** alerts of their respective severity regardless of lifecycle state (including `Resolved` and `Dismissed`), matching the totals shown in the Alert Center list. The Dashboard "Urgent Alerts" KPI sums only **active** (non-terminal) `critical + warnings` to represent alerts currently needing attention; its subtitle displays the per-severity breakdown (e.g., "2 critical, 2 warnings"). All three severity counters are returned by `GET /api/alerts/summary`.
 
 **Trace:** Implementation -- `keylime-webtool-backend/src/models/alert_store.rs`
 
@@ -878,7 +878,7 @@ The frontend derives attestation KPIs from agent state data when no attestation 
 | Total Agents | `paginated_response.total_items` or `agents.length` |
 | Failed Attestations | Count of agents in `failed`, `invalid_quote`, `tenant_failed` (pull) or `fail`, `timeout` (push) state |
 | Success Rate | `((total - failed) / total) * 100` |
-| Active Alerts | From `GET /api/alerts/summary` -> `critical + warnings` count |
+| Urgent Alerts | From `GET /api/alerts/summary` -> `critical + warnings` count; subtitle shows per-severity breakdown (e.g., "2 critical, 2 warnings") |
 | Alert Center: Critical | From `GET /api/alerts/summary` -> `critical` (all states) |
 | Alert Center: Warnings | From `GET /api/alerts/summary` -> `warnings` (all states) |
 | Alert Center: Info | From `GET /api/alerts/summary` -> `info` (all states) |
