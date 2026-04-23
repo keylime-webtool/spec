@@ -1,0 +1,40 @@
+---
+name: markdown-lint
+
+"on":
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check for lintable changes
+        id: filter
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            CHANGED=$(git diff --name-only \
+              "${{ github.event.pull_request.base.sha }}" HEAD)
+          else
+            CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+          fi
+          if echo "$CHANGED" | grep -qE \
+            '\.(md)$|^\.markdownlint-cli2\.yaml$|^\.github/workflows/markdown-lint\.yaml$'; then
+            echo "lintable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "lintable=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Changed files:"
+          echo "$CHANGED"
+          echo "lintable=$(cat "$GITHUB_OUTPUT" | grep lintable | cut -d= -f2)"
+
+      - uses: DavidAnson/markdownlint-cli2-action@v19
+        if: steps.filter.outputs.lintable == 'true'
+        with:
+          globs: '**/*.md'
