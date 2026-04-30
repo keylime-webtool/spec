@@ -83,10 +83,10 @@ The System transforms Keylime from a CLI-driven security tool into a visual oper
 | FR-047 | Alert management dashboard with lifecycle workflow | MUST | Revocation - Alert Workflow |
 | FR-048 | Alert auto-escalation after SLA timeout | SHOULD | Revocation - Alert Workflow |
 | FR-049 | Alert auto-resolve on successful re-attestation | SHOULD | Revocation - Alert Workflow |
-| FR-050 | Unified certificate view across all cert types | MUST | Certificate Management - Overview |
+| FR-050 | Unified certificate view (EK, AK, mTLS) | MUST | Certificate Management - Overview |
 | FR-051 | Certificate expiry dashboard with tiered warnings | MUST | Certificate Management - Expiry Dashboard |
-| FR-052 | Certificate detail inspection and chain visualization | MUST | Certificate Management - Operations |
-| FR-053 | Automated certificate renewal workflow | SHOULD | Certificate Management - Operations |
+| FR-052 | Certificate detail inspection (EK, AK, mTLS) and chain visualization | MUST | Certificate Management - Operations |
+| ~~FR-053~~ | ~~Automated certificate renewal workflow~~ | ~~SHOULD~~ | ~~Removed — no Keylime API for renewal~~ |
 | FR-054 | Pull mode attestation monitoring | MUST | Attestation Modes - Pull Mode Monitoring |
 | FR-055 | Push mode attestation monitoring | MUST | Attestation Modes - Push Mode Monitoring |
 | FR-056 | Mixed mode unified views | MUST | Attestation Modes - Comparative View |
@@ -740,7 +740,7 @@ Feature: Agent Detail Actions
 
 ### FR-020: Agent Detail Six-Tab Deep-Dive
 
-**Description:** The System MUST provide six specialized tabs on the agent detail page: (1) Timeline — attestation success/failure history with zoomable time range; (2) PCR Values — current PCR bank values with change history and diffs; (3) IMA Log — measurement list entries with policy match/mismatch indicators and search by file path or hash; (4) Boot Log — UEFI event log entries with measured boot validation; (5) Certificates — EK, AK, IAK, IDevID, mTLS certificate details and expiry countdown; (6) Raw Data — JSON view with source selector offering three views: Backend Data (merged agent summary computed by the dashboard), Registrar Data (raw JSON from the Keylime Registrar API), and Verifier Data (raw JSON from the Keylime Verifier API), with a copy-to-clipboard button inline with the source selector (FR-083).
+**Description:** The System MUST provide six specialized tabs on the agent detail page: (1) Timeline — attestation success/failure history with zoomable time range; (2) PCR Values — current PCR bank values with change history and diffs; (3) IMA Log — measurement list entries with policy match/mismatch indicators and search by file path or hash; (4) Boot Log — UEFI event log entries with measured boot validation; (5) Certificates — EK, AK, mTLS certificate details and expiry countdown; (6) Raw Data — JSON view with source selector offering three views: Backend Data (merged agent summary computed by the dashboard), Registrar Data (raw JSON from the Keylime Registrar API), and Verifier Data (raw JSON from the Keylime Verifier API), with a copy-to-clipboard button inline with the source selector (FR-083).
 
 **IMA Log Entry Schema:** Each IMA log entry returned by the backend MUST include: `pcr` (PCR index, typically 10), `template_hash` (SHA-256 hash of the template data), `template_name` (IMA template type, e.g., `ima-ng`), `filedata_hash` (hash of the measured file content), and `filename` (absolute path of the measured file).
 
@@ -786,7 +786,7 @@ Feature: Agent Detail Tabs
   Scenario: View agent certificates with expiry countdown
     Given the user is viewing agent "a1b2c3d4" detail page
     When the user selects the "Certificates" tab
-    Then EK, AK, IAK, IDevID, and mTLS certificate details MUST be displayed
+    Then EK, AK, and mTLS certificate details MUST be displayed
     And each certificate MUST show an expiry countdown (days remaining)
 
   Scenario: View raw data with source selector
@@ -1564,7 +1564,7 @@ Feature: Alert Auto-Resolve
 
 ### FR-050: Unified Certificate View
 
-**Description:** The System MUST provide a unified view of all certificate types in the Keylime ecosystem: EK Certificate (TPM vendor), AK Certificate (Keylime CA), mTLS Certificate (Agent↔Verifier), IAK Certificate (manufacturer), IDevID Certificate (manufacturer), and Server Certificates (Verifier/Registrar from Org CA).
+**Description:** The System MUST provide a unified read-only view of the three certificate types that Keylime currently exposes via its APIs: EK Certificate (TPM vendor), AK Certificate (Keylime CA), and mTLS Certificate (Agent↔Verifier). IAK Certificate, IDevID Certificate, and Server Certificates are out of scope until Keylime APIs expose them; they MAY be added in a future revision.
 
 **Trace:** Certificate Management - Overview
 
@@ -1573,9 +1573,8 @@ Feature: Unified Certificate View
 
   Scenario: Display all certificate types
     Given agents have EK, AK, and mTLS certificates
-    And the Verifier and Registrar have server certificates
     When the user navigates to the Certificate Management view
-    Then all certificate types MUST be listed in a unified view
+    Then EK, AK, and mTLS certificate types MUST be listed in a unified view
     And each certificate MUST show its type, associated entity, and validity status
 
   Scenario: Agent with missing certificate data
@@ -1586,7 +1585,7 @@ Feature: Unified Certificate View
 
 ### FR-051: Certificate Expiry Dashboard
 
-**Description:** The System MUST display a certificate expiry dashboard showing summary counts (Expired, Expiring within 30 days, Valid, Total) and a detailed list of certificates requiring attention. The System MUST display a 90-day certificate expiry timeline. Alert thresholds MUST be tiered: 90-day informational, 30-day action required, 7-day critical, 1-day emergency, and expired.
+**Description:** The System MUST display a certificate expiry dashboard showing summary counts (Expired, Expiring within 30 days, Valid, Total) and a detailed list of certificates requiring attention. The System MUST display a 90-day certificate expiry timeline. Alert thresholds MUST be tiered: 90-day informational, 30-day action required, 7-day critical, 1-day emergency, and expired. This is a derived view: the backend iterates registered agents, parses their EK, AK, and mTLS certificates obtained from Keylime APIs, and computes expiry status. No dedicated Keylime expiry API is required.
 
 **Trace:** Certificate Management - Expiry Dashboard; Certificate Management - Operations
 
@@ -1613,7 +1612,7 @@ Feature: Certificate Expiry Dashboard
 
 ### FR-052: Certificate Detail Inspection
 
-**Description:** The System MUST provide a detailed certificate inspection view showing: Subject and Issuer DN, serial number, validity period (Not Before/After), public key algorithm and size, signature algorithm, Subject Alternative Names (SANs), Key Usage / Extended Key Usage, certificate chain visualization, and PEM/DER export options. For EK certificates, the System MUST verify the TPM vendor and validate the chain against known CAs.
+**Description:** The System MUST provide a detailed certificate inspection view for the three Keylime-exposed certificate types (EK, AK, mTLS), showing: Subject and Issuer DN, serial number, validity period (Not Before/After), public key algorithm and size, signature algorithm, Subject Alternative Names (SANs), Key Usage / Extended Key Usage, certificate chain visualization, and PEM/DER export options. For EK certificates, the System MUST verify the TPM vendor and validate the chain against known CAs.
 
 **Trace:** Certificate Management - Operations
 
@@ -1639,34 +1638,9 @@ Feature: Certificate Detail Inspection
     Then the chain validation result MUST be displayed (valid/invalid)
 ```
 
-### FR-053: Automated Certificate Renewal
+### ~~FR-053: Automated Certificate Renewal~~ (Removed)
 
-**Description:** The System SHOULD support automated certificate renewal workflows for Keylime CA-issued certificates. Renewal MUST include: approval workflow, batch scheduling, pre-renewal validation, and rollback on failure.
-
-**Trace:** Certificate Management - Operations
-
-```gherkin
-Feature: Automated Certificate Renewal
-
-  Scenario: Auto-renew expiring mTLS certificate
-    Given agent "agent-015" has an mTLS certificate expiring in 7 days
-    And auto-renewal is enabled for Keylime CA certificates
-    When the System initiates renewal
-    Then the certificate SHOULD be renewed with approval workflow
-    And the new certificate MUST be validated before activation
-
-  Scenario: Rollback on renewal failure
-    Given a certificate renewal fails validation
-    When the System detects the failure
-    Then the System SHOULD rollback to the previous certificate
-    And an alert MUST be raised indicating renewal failure
-
-  Scenario: Auto-renewal not available for vendor certificates
-    Given agent "agent-015" has an EK certificate issued by a TPM vendor
-    When the System evaluates the certificate for auto-renewal
-    Then the System MUST skip auto-renewal for vendor-issued certificates
-    And the certificate expiry alert MUST indicate "manual renewal required"
-```
+**Status:** Removed. Keylime does not expose an API to trigger certificate renewal. Automated renewal workflows (approval, batch scheduling, pre-renewal validation, rollback) cannot be implemented without upstream API support. This requirement MAY be reintroduced if Keylime adds certificate lifecycle management APIs in a future release.
 
 ### FR-054: Pull Mode Attestation Monitoring
 
