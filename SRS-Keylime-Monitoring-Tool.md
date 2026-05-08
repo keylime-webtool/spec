@@ -3958,5 +3958,8 @@ The design details that realize these requirements -- including component decomp
 | IR-016: TOML Config Persistence | 3.8.1 | Resource View |
 | IR-017: Sidebar Visibility Toggle | 3.2.2 | Composition View |
 | IR-018: Backend Health Probes | 3.7.3 | Algorithm View |
+| IR-019: Repository Abstraction Layer | 3.3.11 | Logical View |
+
+<!-- CHANGED: Added IR-019 for repository abstraction layer -->
 
 The SDD also includes a full SRS traceability matrix (Section 6) mapping every implemented requirement to its corresponding design element.

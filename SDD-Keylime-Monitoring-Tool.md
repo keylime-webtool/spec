@@ -149,16 +149,23 @@ keylime-webtool-backend/src/
 |   +-- session.rs             Server-side session revocation (SR-011)
 +-- audit/
 |   +-- logger.rs              Hash-chained audit entries (FR-061, SR-015)
++-- repository/                                                          # <!-- CHANGED -->
+|   +-- mod.rs                 Repository trait definitions (3.3.11)
+|   +-- alert.rs               AlertRepository trait and InMemoryAlertRepository
+|   +-- attestation.rs         AttestationRepository trait and FallbackAttestationRepository
+|   +-- policy.rs              PolicyRepository trait
+|   +-- audit.rs               AuditRepository trait
+|   +-- cache.rs               CacheBackend trait, RedisCacheBackend, InMemoryCacheBackend
 +-- storage/
 |   +-- db.rs                  TimescaleDB connection pool
-|   +-- cache.rs               Redis cache with tiered TTLs (NFR-019)
+|   +-- cache.rs               RedisCacheBackend implementation (NFR-019); see 3.3.11 for trait
 +-- models/
     +-- agent.rs               Agent domain model and state enum
     +-- attestation.rs         Attestation, pipeline, failure models
     +-- policy.rs              Policy and approval workflow models
     +-- certificate.rs         Certificate and expiry models
     +-- alert.rs               Alert, severity, notification models
-    +-- alert_store.rs         In-memory alert store with lifecycle
+    +-- alert_store.rs         InMemoryAlertRepository implementation (pre-DB); see 3.3.11 for trait
     +-- kpi.rs                 KPI and summary aggregation types
 ```
 
@@ -240,27 +247,35 @@ keylime-webtool-frontend/src/
 | Backend Language | Rust | 1.75+ | SR-023 |
 | Backend Runtime | Tokio | 1.x | NFR-005 |
 | Backend TLS | rustls | 0.23 | SR-004 |
-| Backend Database | sqlx (PostgreSQL) | 0.8 | — |
-| Backend Cache | redis | 0.27 | NFR-019 |
+| Backend Database | sqlx (PostgreSQL) — via repository traits (3.3.11) | 0.8 | — |
+| Backend Cache | redis — via `CacheBackend` trait (3.3.11) | 0.27 | NFR-019 |
 | Backend Auth | openidconnect + jsonwebtoken | 4 / 9 | SR-001, SR-010 |
 | Backend HTTP Client | reqwest (rustls-tls) | 0.12 | SR-004 |
 | Backend Observability | tracing + OpenTelemetry | 0.1 / 0.27 | — |
 | Database | TimescaleDB (PostgreSQL) | — | — |
 | Cache | Redis | — | NFR-019 |
 
+<!-- CHANGED: sqlx and redis rows updated to reference repository traits (3.3.11) -->
+
 ### 3.3 Logical View
 
 #### 3.3.1 Backend Application State
 
+<!-- CHANGED: AppState updated with repository trait objects -->
+
 ```rust
 pub struct AppState {
-    keylime_client: Arc<RwLock<Arc<KeylimeClient>>>,  // Hot-swappable Keylime API client (FR-072)
-    pub alert_store: Arc<AlertStore>,                  // In-memory alert management
-    pub settings_store: Arc<SettingsStore>,             // TOML config persistence (FR-075)
+    keylime_client: Arc<RwLock<Arc<KeylimeClient>>>,    // Hot-swappable Keylime API client (FR-072)
+    pub alert_repo: Arc<dyn AlertRepository>,            // Alert persistence (3.3.11)
+    pub attestation_repo: Arc<dyn AttestationRepository>,// Attestation history (3.3.11)
+    pub policy_repo: Arc<dyn PolicyRepository>,          // Policy storage (3.3.11)
+    pub audit_repo: Arc<dyn AuditRepository>,            // Audit log persistence (3.3.11)
+    pub cache: Arc<dyn CacheBackend>,                    // Cache abstraction (3.3.11)
+    pub settings_store: Arc<SettingsStore>,               // TOML config persistence (FR-075)
 }
 ```
 
-The `KeylimeClient` is wrapped in `Arc<RwLock<Arc<KeylimeClient>>>` to support hot-swapping at runtime: the outer `Arc` is shared across handlers, `RwLock` allows atomic replacement, and the inner `Arc` lets in-flight requests complete with the old client while new requests use the updated one. Handlers access the client via a `keylime()` accessor method. `SettingsStore` persists configuration changes to a TOML file on disk. `AppState` is cloned into every Axum handler via `State<AppState>` extractor.
+The `KeylimeClient` is wrapped in `Arc<RwLock<Arc<KeylimeClient>>>` to support hot-swapping at runtime: the outer `Arc` is shared across handlers, `RwLock` allows atomic replacement, and the inner `Arc` lets in-flight requests complete with the old client while new requests use the updated one. Handlers access the client via a `keylime()` accessor method. Repository trait objects and the `CacheBackend` are constructed in `main.rs` based on runtime configuration: when a database URL is provided, PostgreSQL-backed implementations are used; when absent, in-memory implementations provide the same interface (see 3.3.11 for trait definitions and the implementation matrix). `SettingsStore` remains a concrete type — its simple TOML file persistence does not require backend swappability. `AppState` is cloned into every Axum handler via `State<AppState>` extractor.
 
 **Trace:** Implementation -- `keylime-webtool-backend/src/state.rs`
 
@@ -554,6 +569,103 @@ The frontend mirrors backend models as TypeScript interfaces in `src/types/`. Ke
 
 **Trace:** Implementation -- `keylime-webtool-frontend/src/types/`
 
+<!-- CHANGED: New section — Repository Abstraction Layer -->
+
+#### 3.3.11 Repository Abstraction Layer
+
+The backend employs a hexagonal (ports-and-adapters) architecture for data persistence and caching. Handlers depend on **trait objects** (ports) injected via `AppState`; concrete implementations (adapters) for SQL, in-memory, Redis, or file-based storage are constructed in `main.rs` based on runtime configuration. This enables: (a) testing handlers with in-memory fakes without external dependencies, (b) swapping storage backends without handler changes, and (c) graceful degradation per NFR-016 when a backend is unavailable.
+
+**Persistent Store Traits:**
+
+```rust
+#[async_trait]
+pub trait AlertRepository: Send + Sync {
+    async fn create(&self, alert: NewAlert) -> Result<Alert>;
+    async fn get(&self, id: Uuid) -> Result<Option<Alert>>;
+    async fn list(&self, filter: AlertFilter) -> Result<PaginatedResponse<Alert>>;
+    async fn update_status(&self, id: Uuid, transition: AlertTransition) -> Result<Alert>;
+    async fn summary(&self) -> Result<AlertSummary>;
+}
+```
+
+```rust
+#[async_trait]
+pub trait AttestationRepository: Send + Sync {
+    async fn store_result(&self, result: AttestationResult) -> Result<()>;
+    async fn query_timeline(&self, range: TimeRange) -> Result<Vec<TimelineBucket>>;
+    async fn get_pipeline(&self, agent_id: Uuid) -> Result<Vec<PipelineStage>>;
+    async fn list_failures(&self, filter: FailureFilter) -> Result<PaginatedResponse<AttestationFailure>>;
+    async fn correlate_incidents(&self) -> Result<Vec<Incident>>;
+    async fn get_incident(&self, id: Uuid) -> Result<Option<Incident>>;
+}
+```
+
+```rust
+#[async_trait]
+pub trait PolicyRepository: Send + Sync {
+    async fn create(&self, policy: NewPolicy) -> Result<Policy>;
+    async fn get(&self, id: &str) -> Result<Option<Policy>>;
+    async fn list(&self, filter: PolicyFilter) -> Result<PaginatedResponse<Policy>>;
+    async fn update(&self, id: &str, update: PolicyUpdate) -> Result<Policy>;
+    async fn delete(&self, id: &str) -> Result<()>;
+    async fn list_versions(&self, id: &str) -> Result<Vec<PolicyVersion>>;
+    async fn diff(&self, id: &str, v1: u32, v2: u32) -> Result<PolicyDiff>;
+    async fn rollback(&self, id: &str, version: u32) -> Result<Policy>;
+    async fn submit_for_approval(&self, id: &str, drafter: &str) -> Result<ApprovalRequest>;
+    async fn approve(&self, request_id: Uuid, approver: &str) -> Result<Policy>;
+}
+```
+
+The `approve` method enforces SR-018 (drafter != approver) as a precondition. The implementation MUST reject self-approval and return an error.
+
+```rust
+#[async_trait]
+pub trait AuditRepository: Send + Sync {
+    async fn append(&self, entry: NewAuditEntry) -> Result<AuditEntry>;
+    async fn query(&self, filter: AuditFilter) -> Result<PaginatedResponse<AuditEntry>>;
+    async fn verify_chain(&self, range: Option<(u64, u64)>) -> Result<ChainVerification>;
+    async fn export(&self, filter: AuditFilter, format: ExportFormat) -> Result<Vec<u8>>;
+}
+```
+
+`AuditRepository` is intentionally insert-only — there are no `update` or `delete` methods, enforcing audit immutability at the trait level. The `append` method computes `entry_hash` and `previous_hash` per the hash chain algorithm (3.7.4). SR-026 retention policy is enforced by the implementation, not the trait.
+
+**Cache Abstraction:**
+
+```rust
+#[async_trait]
+pub trait CacheBackend: Send + Sync {
+    async fn get(&self, key: &str) -> Result<Option<Vec<u8>>>;
+    async fn set(&self, key: &str, value: &[u8], ttl: Duration) -> Result<()>;
+    async fn invalidate(&self, key: &str) -> Result<()>;
+    async fn invalidate_prefix(&self, prefix: &str) -> Result<()>;
+}
+```
+
+The trait operates on raw bytes (`Vec<u8>` / `&[u8]`) to remain object-safe. Callers serialize/deserialize via `serde_json` at the call site. Tiered TTLs from 3.8.3 are passed by callers, not enforced by the trait.
+
+**Implementation Matrix:**
+
+| Trait | In-Memory | PostgreSQL (TimescaleDB) | Redis |
+|-------|-----------|--------------------------|-------|
+| `AlertRepository` | `InMemoryAlertRepository` (current pre-DB) | `SqlAlertRepository` (Phase 2) | — |
+| `AttestationRepository` | `FallbackAttestationRepository` (3.7.1 algorithm) | `SqlAttestationRepository` (Phase 2) | — |
+| `PolicyRepository` | — | `SqlPolicyRepository` (Phase 2) | — |
+| `AuditRepository` | — | `SqlAuditRepository` (Phase 2) | — |
+| `CacheBackend` | `InMemoryCacheBackend` (testing / fallback) | — | `RedisCacheBackend` (production) |
+
+**Data Minimization Enforcement (SR-013, SR-014):** No repository method accepts `RawTpmQuote`, `ImaLog`, `BootLog`, or `PopToken` types. `AttestationRepository::store_result` accepts `AttestationResult` (3.3.6) which contains only `agent_id`, `result` (pass/fail), `failure_type`, `failure_detail`, `latency_ms`, `timestamp`, and `verification_stages` — all derived/computed data, never raw quotes. Raw data flows through handlers directly from the `KeylimeClient` to the HTTP response without touching any repository.
+
+**Graceful Degradation Pattern (NFR-016):**
+
+| Condition | Behavior |
+|-----------|----------|
+| SQL backend unreachable at startup | Fall back to in-memory implementations; log warning |
+| `CacheBackend::get/set` returns connection error at runtime | Handler proceeds without cache (treats error as cache miss); direct Keylime API call |
+| `AttestationRepository` query fails at runtime | Handler falls back to live Keylime API data with staleness indicator |
+
+**Trace:** Implementation -- `keylime-webtool-backend/src/repository/`
+
 ### 3.4 Interface View
 
 #### 3.4.1 Standard API Response Envelope
@@ -747,6 +859,8 @@ All routes except `/login` are wrapped in the `Layout` component (Sidebar + TopB
 
 #### 3.5.1 Data Flow: Browser to Keylime
 
+<!-- CHANGED: Data flow updated with repository and cache trait references -->
+
 ```text
 Browser (SPA)
     |
@@ -756,10 +870,15 @@ Backend (Axum)
     |
     +-- JWT validation (SR-010)
     +-- RBAC permission check (SR-003)
-    +-- Cache lookup (Redis, NFR-019)
+    +-- Cache lookup (CacheBackend, NFR-019)
     |       |
     |       +-- Cache HIT: return cached data
-    |       +-- Cache MISS: continue to Keylime
+    |       +-- Cache MISS: continue
+    |
+    +-- Repository query (if persisted data exists, 3.3.11)
+    |       |
+    |       +-- DB available: return persisted data
+    |       +-- DB unavailable: continue to Keylime (NFR-016)
     |
     +-- Circuit breaker check (NFR-017)
     |       |
@@ -769,8 +888,9 @@ Backend (Axum)
     +-- mTLS request to Keylime API (SR-004)
     |
     +-- Transform response to domain model
-    +-- Write to cache (with TTL)
-    +-- Audit log entry (FR-061)
+    +-- Write to repository (attestation results only, SR-013)
+    +-- Write to cache (CacheBackend, with TTL)
+    +-- Audit log entry (AuditRepository, FR-061)
     +-- Return API envelope to browser
 ```
 
@@ -970,12 +1090,14 @@ AppConfig
 |   +-- circuit_breaker
 |       +-- failure_threshold: u32  // Default: 5
 |       +-- reset_timeout_secs: u64 // Default: 60
-+-- database
-|   +-- url: String               // PostgreSQL connection string
++-- database                                              # <!-- CHANGED -->
+|   +-- enabled: bool             // Default: true; false = in-memory repositories (3.3.11)
+|   +-- url: String               // PostgreSQL connection string (required when enabled)
 |   +-- pool_size: u32            // Default: 20
 |   +-- connect_timeout_secs: u64 // Default: 5
-+-- cache
-|   +-- redis_url: String
++-- cache                                                  # <!-- CHANGED -->
+|   +-- backend: String           // "redis" | "memory"; Default: "redis" (3.3.11)
+|   +-- redis_url: String         // Required when backend = "redis"
 |   +-- ttl_agent_list_secs: u64  // Default: 10 (NFR-019)
 |   +-- ttl_agent_detail_secs: u64 // Default: 30 (NFR-019)
 |   +-- ttl_policies_secs: u64    // Default: 60 (NFR-019)
@@ -1035,7 +1157,10 @@ The Backend URL is also runtime-configurable via the Settings page (FR-072). The
 | Policies | 60s | Policies change infrequently |
 | Certificates | 300s | Certificate data is quasi-static |
 
-**Trace:** Implementation -- `keylime-webtool-backend/src/storage/cache.rs`
+<!-- CHANGED: Cache TTL strategy updated with CacheBackend trait reference -->
+Cache TTLs are applied through the `CacheBackend` trait (3.3.11). The `RedisCacheBackend` implementation stores entries in Redis namespaced key spaces using native `SETEX`/`EXPIRE`; the `InMemoryCacheBackend` uses `DashMap` entries with a background `tokio::time::interval` sweep task. Callers pass the appropriate TTL from the configuration (3.8.1) when calling `CacheBackend::set`. The tiered TTL table above is backend-agnostic.
+
+**Trace:** Implementation -- `keylime-webtool-backend/src/storage/cache.rs`, `keylime-webtool-backend/src/repository/cache.rs`
 
 #### 3.8.4 Concurrent Log Fetch Limit (NFR-023)
 
@@ -1073,11 +1198,20 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | Agent UUID hyperlinks in failure list | One-click drill-down from failure to agent detail eliminates manual navigation; uses React Router `<Link>` for SPA navigation without full reload | FR-082 |
 | Inline copy-to-clipboard button in Raw Data source selector | Single compact button adjacent to filter group copies whichever JSON view is active; uses Clipboard API with 2s checkmark feedback for confirmation; avoids per-view copy buttons to reduce clutter | FR-083 |
 | Clickable KPI cards with drill-down navigation | Each `KpiCard` accepts an optional `linkTo` prop (route string); when set, the card renders as a React Router `<Link>`, shows pointer cursor and hover highlight, and navigates to the target view (with optional query params for pre-applied filters) | FR-084 |
+| Domain-specific repository traits (not generic CRUD) | Each domain has unique query patterns (alert lifecycle transitions, audit hash-chain append, policy version diffing); generic `Repository<T>` would force awkward extensions or lose type safety; domain traits document the exact persistence contract | FR-047, FR-024, FR-034, FR-061 |
+| Repository traits enforce SR-013 at the type level | No repository method accepts raw TPM quotes, IMA logs, or PoP tokens; the API surface makes it structurally impossible to persist forbidden data, eliminating a class of compliance bugs | SR-013, SR-014 |
+| `CacheBackend` trait with `InMemoryCacheBackend` fallback | Decouples handlers from Redis; enables testing without Redis, graceful degradation when Redis is unavailable (NFR-016), and single-node deployments without external cache dependencies | NFR-016, NFR-019 |
+| `AuditRepository` is insert-only (no update/delete) | Enforces audit immutability at the trait API level; implementations cannot accidentally expose mutation; hash-chain integrity (SR-015) depends on append-only semantics | FR-061, SR-015, SR-026 |
+| Repository injection via `AppState` (compile-time DI) | No runtime DI framework needed; `main.rs` constructs concrete implementations based on config and injects `Arc<dyn Trait>` into `AppState`; consistent with existing `KeylimeClient` and `SettingsStore` injection pattern | -- |
+| `FallbackAttestationRepository` preserves current behavior | Timeline distribution algorithm (3.7.1) runs inside the fallback repository implementation, not in the handler; isolates the pre-DB algorithm behind the trait so the same handler code works with real history data once `SqlAttestationRepository` is implemented | FR-024 |
+
+<!-- CHANGED: Added 6 repository abstraction design rationale entries -->
 
 ---
 
 ## 5. Design Overlays
 
+<!-- CHANGED: Security overlay — data minimization row updated; Performance overlay — cache strategy and storage fallback rows updated -->
 ### 5.1 Security Overlay
 
 | Concern | Design Element | SRS Trace |
@@ -1091,7 +1225,7 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | Key storage | mTLS private keys from HSM/Vault, never cleartext on disk | SR-005, SR-006 |
 | Session revocation | Server-side `SessionStore` with `HashSet<session_id>` | SR-011 |
 | Input validation | CSP headers, input sanitization | SR-012 |
-| Data minimization | Never cache/store raw TPM quotes, IMA logs, PoP tokens | SR-013, SR-014 |
+| Data minimization | Never cache/store raw TPM quotes, IMA logs, PoP tokens; repository traits (3.3.11) exclude these types from method signatures | SR-013, SR-014 |
 | Audit integrity | SHA-256 hash chain with optional RFC 3161 anchoring | SR-015 |
 | SSRF protection | Webhook URL allowlist, block RFC 1918 addresses | SR-016 |
 | Two-person rule | Drafter != Approver enforcement | SR-017, SR-018 |
@@ -1107,7 +1241,8 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 |---------|---------------|-----------|
 | KPI refresh latency | < 30 seconds via polling or WebSocket push | NFR-001 |
 | Backend concurrency | Tokio async runtime, 10K WebSocket connections target | NFR-005 |
-| Cache strategy | Redis with tiered TTLs (10s-300s) per data type | NFR-019 |
+| Cache strategy | `CacheBackend` trait (3.3.11) with tiered TTLs (10s-300s); `RedisCacheBackend` for production, `InMemoryCacheBackend` for testing/fallback | NFR-019 |
+| Storage fallback | In-memory repository implementations when DB unavailable (3.3.11) | NFR-016 |
 | Fault tolerance | Circuit breaker on Verifier API (threshold: 5, reset: 60s) | NFR-017 |
 | Log fetch limit | Max 5 parallel concurrent Verifier log fetches | NFR-023 |
 | Reconciliation | Periodic sweep every 5 minutes | NFR-020 |
@@ -1116,6 +1251,8 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 ---
 
 ## 6. SRS Traceability Matrix
+
+<!-- CHANGED: Traceability matrix updated — 3.3.11 added to FR-024, FR-034, FR-035, FR-039, FR-042, FR-047, FR-061, NFR-016, NFR-019, SR-013, SR-014, SR-015 -->
 
 ### 6.1 Functional Requirements
 
@@ -1140,26 +1277,26 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | FR-019 | 3.4.3, 3.6.1 | `POST /api/agents/:id/actions/:action` |
 | FR-020 | 3.4.3 | Agent detail tabs: timeline, TPM Policy, IMA, boot, certs, raw (with backend/registrar/verifier source selector, copy button per FR-083) |
 | FR-021 | 3.4.3 | TPM Policy tab — reads `tpm_policy` from agent detail (`GET /api/agents/:id`) |
-| FR-024 | 3.4.3, 3.7.1 | Attestation timeline with distribution algorithm |
+| FR-024 | 3.3.11, 3.4.3, 3.7.1 | `AttestationRepository` trait, `FallbackAttestationRepository`, timeline algorithm |
 | FR-025 | 3.3.4 | Alert types and severity |
 | FR-026 | 3.3.6 | Failure correlation types |
 | FR-029 | 3.4.3 | `GET /api/attestations/push-mode` |
 | FR-030 | 3.3.6, 3.4.3 | Pipeline stages, `GET /api/attestations/pipeline/:id` |
 | FR-033 | 3.3.7, 3.4.3 | Policy model with kind discriminator |
-| FR-034 | 3.4.3 | Policy CRUD endpoints |
-| FR-035 | 3.4.3 | `GET /api/policies/:id/versions`, `/diff`, `/rollback` |
+| FR-034 | 3.3.11, 3.4.3 | `PolicyRepository` trait, policy CRUD endpoints |
+| FR-035 | 3.3.11, 3.4.3 | `PolicyRepository::list_versions/diff/rollback` |
 | FR-037 | 3.4.3 | `GET /api/policies/assignment-matrix` |
 | FR-038 | 3.4.3 | `POST /api/policies/:id/impact` |
-| FR-039 | 3.4.3, 3.6.3 | Policy approval workflow, two-person rule |
-| FR-042 | 3.3.8, 3.4.3 | Audit entry model, `GET /api/audit-log` |
-| FR-047 | 3.3.4, 3.6.2 | Alert lifecycle state machine |
+| FR-039 | 3.3.11, 3.4.3, 3.6.3 | `PolicyRepository::approve`, two-person rule enforcement |
+| FR-042 | 3.3.8, 3.3.11, 3.4.3 | `AuditRepository` trait, audit entry model, `GET /api/audit-log` |
+| FR-047 | 3.3.4, 3.3.11, 3.6.2 | `AlertRepository` trait, alert lifecycle state machine |
 | FR-050 | 3.3.5, 3.4.3 | Certificate model, `GET /api/certificates` |
 | FR-051 | 3.3.5 | Certificate expiry derivation from regcount |
 | FR-054 | 3.4.3 | `GET /api/attestations/pull-mode` |
 | FR-055 | 3.4.3 | `GET /api/attestations/push-mode` |
 | FR-057 | 3.4.3, 3.7.3 | `GET /api/integrations/status` with health probes |
 | FR-059 | 3.4.3 | `GET /api/compliance/frameworks`, `/reports/:framework` |
-| FR-061 | 3.3.8, 3.7.4 | Hash chain algorithm, audit logger |
+| FR-061 | 3.3.8, 3.3.11, 3.7.4 | `AuditRepository::append` with hash chain |
 | FR-064 | 3.4.3 | `GET /api/performance/verifiers` |
 | FR-069 | 3.3.3, 3.4.3 | Agent state enumeration, `GET /api/attestations/state-machine` |
 | FR-072 | 3.3.1, 3.4.3, 3.8.1 | `Arc<RwLock<Arc<KeylimeClient>>>`, `GET/PUT /api/settings/keylime` |
@@ -1185,8 +1322,9 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | NFR-002 | 3.3.3 | Pull-mode (v2) and push-mode (v3) state enums |
 | NFR-004 | 3.2.3 | React 18, TypeScript 5.6, Vite 6.0 |
 | NFR-005 | 3.2.3 | Axum 0.8, Tokio, 10K WebSocket target |
+| NFR-016 | 3.3.11, 5.2 | In-memory repository fallback, `InMemoryCacheBackend` fallback |
 | NFR-017 | 3.7.3 | Circuit breaker: threshold 5, reset 60s |
-| NFR-019 | 3.8.3 | Redis cache with tiered TTLs |
+| NFR-019 | 3.3.11, 3.8.3 | `CacheBackend` trait, tiered TTLs |
 | NFR-021 | 3.4.4 | WebSocket `/ws/events` |
 | NFR-023 | 3.8.4 | Tokio semaphore, max 5 parallel fetches |
 
@@ -1200,5 +1338,7 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | SR-005 | 3.8.1 | `MtlsConfig.key`: HSM/Vault URI |
 | SR-010 | 3.5.3 | JWT claims with 15-min TTL |
 | SR-011 | 3.5.3, 5.1 | Server-side SessionStore with revocation |
-| SR-015 | 3.7.4 | SHA-256 hash chain for audit entries |
+| SR-013 | 3.3.11, 5.1 | Repository trait API excludes raw TPM/IMA/boot/PoP types |
+| SR-014 | 3.3.11, 5.1 | Repository trait API excludes PoP token types |
+| SR-015 | 3.3.11, 3.7.4 | `AuditRepository` append-only trait, SHA-256 hash chain |
 | SR-023 | 3.2.3 | `#![forbid(unsafe_code)]` on Rust crate |
