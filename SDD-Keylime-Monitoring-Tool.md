@@ -1204,8 +1204,9 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | `AuditRepository` is insert-only (no update/delete) | Enforces audit immutability at the trait API level; implementations cannot accidentally expose mutation; hash-chain integrity (SR-015) depends on append-only semantics | FR-061, SR-015, SR-026 |
 | Repository injection via `AppState` (compile-time DI) | No runtime DI framework needed; `main.rs` constructs concrete implementations based on config and injects `Arc<dyn Trait>` into `AppState`; consistent with existing `KeylimeClient` and `SettingsStore` injection pattern | -- |
 | `FallbackAttestationRepository` preserves current behavior | Timeline distribution algorithm (3.7.1) runs inside the fallback repository implementation, not in the handler; isolates the pre-DB algorithm behind the trait so the same handler code works with real history data once `SqlAttestationRepository` is implemented | FR-024 |
+| No `AgentRepository` — agents excluded from repository pattern | Agents are Keylime-owned data observed via pass-through proxy; all operations (list, detail, actions, bulk) forward to Verifier/Registrar APIs and cache responses (10s TTL). Keeping agents out of the repository layer preserves graceful degradation (NFR-016): agent listings work even when the webtool DB is down. `agent_id` in attestation/alert records is a bare UUID reference, not a foreign key requiring local agent persistence | FR-012, NFR-016 |
 
-<!-- CHANGED: Added 6 repository abstraction design rationale entries -->
+<!-- CHANGED: Added 7 repository abstraction design rationale entries -->
 
 ---
 
