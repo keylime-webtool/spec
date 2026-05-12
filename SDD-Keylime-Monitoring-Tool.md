@@ -15,7 +15,7 @@ This Software Design Description (SDD) documents the *how* of the Keylime Monito
 
 ### 1.2 Scope
 
-The SDD covers the full system: a React.js + TypeScript single-page application frontend, a Rust (Axum) asynchronous backend, and their integration with Keylime Verifier/Registrar APIs, TimescaleDB, and Redis.
+The SDD covers the full system: a React.js + TypeScript single-page application frontend, a Rust (Axum) asynchronous backend, and their integration with Keylime Verifier/Registrar APIs, TimescaleDB, and Redis. An alternative Cockpit plugin frontend (`cockpit-keylime`) — built with React + PatternFly 6 + esbuild — is also covered as a parallel deployment option running inside Cockpit (:9090) via cockpit-bridge. Both frontends share the same backend API; the SDD documents both deployment architectures.
 
 ### 1.3 Definitions
 
@@ -31,6 +31,11 @@ The SDD covers the full system: a React.js + TypeScript single-page application 
 | IMA | Integrity Measurement Architecture |
 | SRS | Software Requirements Specification |
 | SDD | Software Design Description |
+| Cockpit | Linux system administration web console (cockpit-project.org) |
+| cockpit-bridge | Server-side process that proxies HTTP/WebSocket between Cockpit shell and backend services |
+| PAM | Pluggable Authentication Modules — Linux modular authentication framework |
+| PatternFly | Red Hat's open-source design system and component library for enterprise web applications |
+| RPM | RPM Package Manager — Linux package format used by RHEL, CentOS, Fedora |
 
 ### 1.4 Design Stakeholders and Concerns
 
@@ -109,6 +114,60 @@ This SDD uses the following IEEE 1016 viewpoints:
 | TimescaleDB | TCP | Connection string | NFR-005 |
 | Redis | TCP | Connection string | NFR-019 |
 | SIEM (Syslog/Splunk/ECS) | TCP/HTTPS | API token | FR-063 |
+
+#### 3.1.3 Cockpit Deployment Context View
+
+When deployed as a Cockpit plugin, the system boundary shifts: the browser communicates with Cockpit (:9090), and cockpit-bridge proxies all requests to the backend. The backend API remains unchanged.
+
+```text
+                                +---------------------------+
+                                |   PAM (System Login)      |
+                                +------------+--------------+
+                                             |
+                                             | PAM auth (SR-030)
+                                             v
++----------------+    TLS 1.3     +---------+---------+
+|   Browser      | <-----------> |   Cockpit (:9090)  |
+|   (Plugin      |   (SR-008)    |   cockpit-ws       |
+|    iframe)     |               +----+----------+----+
++----------------+                    |          |
+                                      |          |
+                      cockpit.http()  |          |  websocket-stream1
+                      (FR-089)        |          |  (FR-090)
+                                      v          v
+                               +------+----------+------+    mTLS      +-----------------+
+                               |   cockpit-bridge       | <----------> | Keylime         |
+                               |   (server-side proxy)  |  (SR-004)    | Verifier API v2 |
+                               +-----------+------------+              +-----------------+
+                                           |
+                                           | mTLS (SR-009)
+                                           v
+                                    +-----------------+
+                                    | Keylime         |
+                                    | Registrar API   |
+                                    +-----------------+
+```
+
+**Key Differences from Standalone SPA (3.1.1):**
+
+| Aspect | Standalone SPA | Cockpit Plugin |
+|--------|---------------|----------------|
+| Browser → Backend | Direct TLS 1.3 + JWT Bearer | Cockpit (:9090) → cockpit-bridge proxy |
+| Authentication | OIDC/SAML → JWT (SR-001) | PAM system login (SR-030) |
+| mTLS to Keylime | Backend reads certs from disk | cockpit-bridge reads certs via tls options (FR-091) |
+| WebSocket | Direct WSS + JWT query param | websocket-stream1 raw channel (FR-090) |
+| Frontend routing | React Router (hash/history) | cockpit.location (hash-based) |
+| Theme control | Per-app toggle (FR-008) | OS-level via Cockpit (NFR-026) |
+
+**Cockpit External Interfaces:**
+
+| Interface | Protocol | Authentication | SRS Trace |
+|-----------|----------|---------------|-----------|
+| Browser → Cockpit | HTTPS (TLS 1.3) | PAM session cookie | SR-008, SR-030 |
+| cockpit-bridge → Backend REST | HTTP/HTTPS (mTLS) | System user identity | FR-089, FR-091 |
+| cockpit-bridge → Backend WebSocket | WS/WSS (mTLS) | System user identity | FR-090, FR-091 |
+
+**Trace:** SRS FR-088, FR-089, FR-090, FR-091, FR-092, SR-030
 
 ### 3.2 Composition View
 
@@ -254,8 +313,75 @@ keylime-webtool-frontend/src/
 | Backend Observability | tracing + OpenTelemetry | 0.1 / 0.27 | — |
 | Database | TimescaleDB (PostgreSQL) | — | — |
 | Cache | Redis | — | NFR-019 |
+| Cockpit Plugin Framework | React | 18.3.1 | FR-088 |
+| Cockpit Plugin Language | TypeScript | 5.6 | FR-088 |
+| Cockpit Plugin Build | esbuild | 0.21+ | FR-088 |
+| Cockpit Plugin Design System | PatternFly | 6.x | NFR-026 |
+| Cockpit Plugin API | cockpit.js | Cockpit 300+ | FR-089, FR-090 |
+| Cockpit Plugin Packaging | RPM | — | FR-093 |
 
 <!-- CHANGED: sqlx and redis rows updated to reference repository traits (3.3.11) -->
+<!-- CHANGED: Added Cockpit plugin technology rows -->
+
+#### 3.2.4 Cockpit Plugin Composition
+
+```text
+cockpit-keylime/
++-- manifest.json                  Cockpit sidebar registration, conditions (FR-088, FR-094)
++-- index.html                     Plugin entry point loaded in Cockpit iframe
++-- keylime.js                     esbuild-bundled JavaScript output
++-- keylime.css                    esbuild-bundled CSS output (PatternFly 6)
++-- src/
+    +-- index.tsx                  React DOM root, cockpit.location router
+    +-- App.tsx                    React Query provider, cockpit.http() client setup
+    +-- api/
+    |   +-- cockpitClient.ts       cockpit.http() wrapper (replaces Axios client)
+    |   +-- agents.ts              Agent API methods (shared contract with SPA)
+    |   +-- attestations.ts        Attestation API methods
+    |   +-- ...                    (mirrors SPA api/ modules, using cockpitClient)
+    +-- hooks/
+    |   +-- useCockpitChannel.ts   websocket-stream1 hook with reconnection (FR-090)
+    |   +-- useCockpitUser.ts      System user identity from cockpit.user() (FR-092)
+    +-- components/
+    |   +-- PageLayout.tsx         PatternFly Page + PageSection (no sidebar — Cockpit provides it)
+    |   +-- ...                    (PatternFly 6 versions of SPA components)
+    +-- config/
+        +-- keylime.conf           Bridge configuration reader (FR-091)
+```
+
+**manifest.json Structure:**
+
+```json
+{
+  "version": 0,
+  "name": "keylime",
+  "requires": { "cockpit": "300" },
+  "menu": {
+    "keylime": {
+      "label": "Keylime Attestation",
+      "order": 500,
+      "docs": [{ "label": "Keylime Documentation", "url": "https://keylime.dev/docs" }]
+    }
+  },
+  "content-security-policy": "default-src 'self' 'unsafe-inline'",
+  "conditions": [{ "path-exists": "/etc/cockpit/keylime.conf" }]
+}
+```
+
+**Key Architectural Differences from Standalone SPA (3.2.2):**
+
+| Aspect | Standalone SPA | Cockpit Plugin |
+|--------|---------------|----------------|
+| HTTP Client | Axios (`src/api/client.ts`) | cockpit.http() (`src/api/cockpitClient.ts`) |
+| WebSocket | Native WebSocket (`useWebSocket.ts`) | cockpit.channel() websocket-stream1 (`useCockpitChannel.ts`) |
+| Routing | React Router 6 (`router.tsx`) | cockpit.location hash-based routing |
+| Layout | Custom sidebar + top bar (`Layout/`) | PatternFly `Page` (Cockpit provides sidebar) |
+| State Management | Zustand + localStorage | Zustand (no localStorage — iframe-scoped) |
+| Auth | Zustand authStore + JWT | cockpit.user() system identity |
+| Build | Vite | esbuild (Cockpit convention) |
+| Deployment | Static assets served by backend or CDN | RPM → /usr/share/cockpit/keylime/ |
+
+**Trace:** SRS FR-088, FR-089, FR-090, FR-091, FR-092, FR-093, FR-094; Implementation -- `cockpit-keylime/`
 
 ### 3.3 Logical View
 
@@ -853,7 +979,88 @@ All list endpoints use a standard pagination wrapper inside `data`:
 
 All routes except `/login` are wrapped in the `Layout` component (Sidebar + TopBar).
 
+> **Cockpit Deployment Note:** The Cockpit plugin uses `cockpit.location` for hash-based routing instead of React Router. Routes are mapped to the same logical pages but use hash fragments (e.g., `#/agents`, `#/agents/uuid`). The `/login` route is not used — Cockpit handles authentication before the plugin loads. The plugin does not render its own sidebar; Cockpit's global sidebar provides navigation to the plugin entry point.
+
 **Trace:** Implementation -- `keylime-webtool-frontend/src/router.tsx`
+
+#### 3.4.6 Cockpit Bridge Interface Contracts
+
+##### cockpit.http() — REST Proxy Contract
+
+The Cockpit plugin uses `cockpit.http()` to proxy REST API requests through cockpit-bridge. The bridge establishes HTTP connections from the server side, eliminating CORS requirements and keeping mTLS certificates server-side.
+
+**Connection Setup:**
+
+```javascript
+const http = cockpit.http({
+  address: backendHost,     // e.g., "localhost" or "backend.local"
+  port: backendPort,        // e.g., 8080
+  tls: {
+    authority: { file: "/etc/keylime/certs/cacert.crt" },
+    certificate: { file: "/etc/keylime/certs/client-cert.crt" },
+    key: { file: "/etc/keylime/certs/client-private.pem" }
+  }
+});
+```
+
+**Request/Response Contract:**
+
+| Property | Value |
+|----------|-------|
+| Method | `http.get(path, headers)`, `http.post(path, headers, body)`, `http.request({ method, path, headers, body })` |
+| Content-Type | `application/json` |
+| Response Format | Standard API envelope (3.4.1) — identical to standalone SPA |
+| Error Handling | cockpit.http() rejects on HTTP errors; plugin parses error envelope |
+| Authentication | No `Authorization: Bearer` header — bridge authenticates via system user identity |
+
+##### websocket-stream1 — WebSocket Proxy Contract
+
+The plugin uses `cockpit.channel()` with `payload: "websocket-stream1"` to establish WebSocket connections through the bridge.
+
+**Channel Setup:**
+
+```javascript
+const channel = cockpit.channel({
+  payload: "websocket-stream1",
+  address: backendHost,
+  port: backendPort,
+  path: "/ws/events",
+  tls: {
+    authority: { file: "/etc/keylime/certs/cacert.crt" },
+    certificate: { file: "/etc/keylime/certs/client-cert.crt" },
+    key: { file: "/etc/keylime/certs/client-private.pem" }
+  }
+});
+```
+
+**Channel Behavior:**
+
+| Property | Value |
+|----------|-------|
+| Message format | JSON strings — identical to standalone WebSocket (3.4.4) |
+| Channels | `kpis`, `agents`, `alerts`, `policies` (same as 3.4.4) |
+| Reconnection | Plugin-managed: exponential backoff 2^n * 1000ms, capped at 30s |
+| Authentication | No JWT query parameter — bridge authenticates via system identity |
+| Channel lifecycle | `channel.addEventListener("message", ...)`, `channel.addEventListener("close", ...)` |
+
+##### TLS Configuration
+
+Certificate paths are read from `/etc/cockpit/keylime.conf` by the plugin at initialization. The configuration file follows INI format:
+
+```ini
+[backend]
+host = localhost
+port = 8080
+
+[tls]
+authority = /etc/keylime/certs/cacert.crt
+certificate = /etc/keylime/certs/client-cert.crt
+key = /etc/keylime/certs/client-private.pem
+```
+
+cockpit-bridge reads the certificate files from disk (as the system user) and uses them to establish mTLS connections. The certificate content never reaches the browser — only file paths are passed through the cockpit.js API.
+
+**Trace:** SRS FR-089, FR-090, FR-091, NFR-028; Implementation -- `cockpit-keylime/src/api/cockpitClient.ts`, `cockpit-keylime/src/hooks/useCockpitChannel.ts`
 
 ### 3.5 Interaction View
 
@@ -940,6 +1147,24 @@ Re-render with new data
 ```
 
 **Trace:** SRS SR-001, SR-002, SR-010, SR-011
+
+**Cockpit Authentication Flow (Alternative):**
+
+```text
+1. User navigates to Cockpit at :9090
+2. Cockpit login page presents PAM authentication (username + password)
+3. PAM validates credentials (+ MFA if configured, e.g., pam_google_authenticator)
+4. Cockpit establishes authenticated session, starts cockpit-bridge as the system user
+5. User clicks "Keylime Attestation" in Cockpit sidebar → plugin iframe loads
+6. Plugin calls cockpit.user() to retrieve system user identity and groups
+7. Plugin sends API requests via cockpit.http() — no Authorization header needed
+8. cockpit-bridge proxies requests with system user context
+9. Backend maps system user/groups to RBAC role (Viewer/Operator/Admin)
+10. Session lifetime governed by Cockpit session (not JWT)
+11. Cockpit logout terminates bridge → plugin session ends immediately
+```
+
+**Trace:** SRS SR-030, FR-092
 
 #### 3.5.4 Data Flow: Background Attestation Recording
 
@@ -1257,6 +1482,12 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | No `AgentRepository` — agents excluded from repository pattern | Agents are Keylime-owned data observed via pass-through proxy; all operations (list, detail, actions, bulk) forward to Verifier/Registrar APIs and cache responses (10s TTL). Keeping agents out of the repository layer preserves graceful degradation (NFR-016): agent listings work even when the webtool DB is down. `agent_id` in attestation/alert records is a bare UUID reference, not a foreign key requiring local agent persistence | FR-012, NFR-016 |
 
 <!-- CHANGED: Added 7 repository abstraction design rationale entries -->
+<!-- CHANGED: Added 4 Cockpit plugin design rationale entries -->
+
+| Cockpit plugin as alternative deployment | Integrates Keylime monitoring directly into the system administrator's existing Cockpit workflow; eliminates context-switching between tools; leverages Cockpit's established authentication, session management, and plugin discovery | FR-088 |
+| PatternFly 6 for Cockpit plugin | Ensures visual consistency with Cockpit core pages; PatternFly is Cockpit's native design system, so users experience a seamless UI across all Cockpit plugins | NFR-026 |
+| cockpit-bridge as mandatory proxy | Eliminates CORS configuration; keeps mTLS certificates server-side (never exposed to browser); leverages Cockpit's existing transport security; backend requires zero changes to support Cockpit deployment | NFR-028, FR-089, FR-090 |
+| PAM replacing OIDC in Cockpit mode | System administrators already authenticate to the host via PAM; requiring a second OIDC login would add friction without security benefit; PAM supports MFA via standard modules (pam_google_authenticator, SSSD) | SR-030, FR-092 |
 
 ---
 
@@ -1285,6 +1516,9 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | Re-registration alert | TPM key change detection via `regcount` | SR-025 |
 | Idle timeout | Configurable session timeout (default: 900s) | SR-028 |
 | Rate limiting | Per-user and global request rate limiting | SR-029, NFR-018 |
+| Cockpit authentication | PAM-based system login replaces OIDC/JWT in Cockpit mode; role mapped from system groups | SR-030, FR-092 |
+| Cockpit transport | cockpit-bridge proxies all traffic; mTLS certs stay server-side; no CORS | NFR-028, FR-089 |
+| Cockpit isolation | Plugin runs in Cockpit iframe; no cross-plugin shared state | NFR-027 |
 
 ### 5.2 Performance Overlay
 
@@ -1365,6 +1599,13 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | FR-084 | 3.2.2 | `KpiCard.tsx`: optional `linkTo` prop wraps card in React Router `<Link>`; Dashboard page maps each KPI to its target route (e.g., Failed Agents → `/agents?state=failed,invalid_quote,tenant_failed`) |
 | FR-085 | 3.2.2 | `Alerts.tsx`: three Recharts donut `PieChart` components below alert table — By Severity, By Type, By State; clickable segments navigate to `/alerts?{dimension}={value}` with filter pre-applied; color maps match Dashboard alert chart (FR-047) |
 | FR-087 | 3.5.4, 3.8.1 | Background `tokio::spawn` observation task, `record_agent_observations()` reuse, dedup tracker, configurable interval |
+| FR-088 | 3.1.3, 3.2.4 | Cockpit plugin manifest.json, sidebar registration, Cockpit context view |
+| FR-089 | 3.1.3, 3.4.6 | cockpit.http() REST proxy through cockpit-bridge |
+| FR-090 | 3.1.3, 3.4.6 | websocket-stream1 raw channel through cockpit-bridge |
+| FR-091 | 3.4.6 | cockpit-bridge TLS options (tls.authority, tls.certificate, tls.key), /etc/cockpit/keylime.conf |
+| FR-092 | 3.5.3, 5.1 | PAM authentication flow, system user/group → RBAC role mapping |
+| FR-093 | 3.2.4 | RPM packaging, /usr/share/cockpit/keylime/ installation path |
+| FR-094 | 3.2.4 | manifest.json conditions (path-exists) for conditional plugin visibility |
 
 ### 6.2 Non-Functional Requirements
 
@@ -1379,6 +1620,9 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | NFR-019 | 3.3.11, 3.8.3 | `CacheBackend` trait, tiered TTLs |
 | NFR-021 | 3.4.4 | WebSocket `/ws/events` |
 | NFR-023 | 3.8.4 | Tokio semaphore, max 5 parallel fetches |
+| NFR-026 | 3.2.4, 5.1 | PatternFly 6 component library, CSS variable inheritance from Cockpit theme |
+| NFR-027 | 3.2.4, 5.1 | Cockpit iframe isolation, no cross-plugin shared state |
+| NFR-028 | 3.1.3, 3.4.6, 5.1 | cockpit-bridge mandatory proxy, no direct browser-to-backend connections |
 
 ### 6.3 Security Requirements
 
@@ -1394,3 +1638,4 @@ Maximum 5 parallel concurrent log fetches to the Verifier API, enforced via Toki
 | SR-014 | 3.3.11, 5.1 | Repository trait API excludes PoP token types |
 | SR-015 | 3.3.11, 3.7.4 | `AuditRepository` append-only trait, SHA-256 hash chain |
 | SR-023 | 3.2.3 | `#![forbid(unsafe_code)]` on Rust crate |
+| SR-030 | 3.5.3, 5.1 | PAM authentication replaces OIDC/JWT in Cockpit mode; system group → RBAC role mapping |
