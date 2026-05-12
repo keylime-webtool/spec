@@ -192,7 +192,7 @@ The System transforms Keylime from a CLI-driven security tool into a visual oper
 
 ### FR-001: Fleet Overview KPI Dashboard
 
-**Description:** The System MUST display a fleet overview dashboard presenting computed KPIs derived from the Keylime Verifier and Registrar APIs. The dashboard MUST show: Total Active Agents, Failed Agents (states 7, 9, 10), Attestation Success Rate, Average Attestation Latency, Certificate Expiry Warnings, Active IMA Policies, Revocation Events (24h), Consecutive Failures per agent, and Registration Count.
+**Description:** The System MUST display a fleet overview dashboard presenting computed KPIs derived from the Keylime Verifier and Registrar APIs. The dashboard MUST show: Total Active Agents, Failed Agents (states 7, 9, 10), Attestation Success Rate, Average Attestation Latency, Certificate Expiry Warnings, Active IMA Policies, Revocation Events (24h), Consecutive Failures per agent, and Registration Count. The Attestation Success Rate visualization MUST distinguish Timeout agents (displayed in orange) from Failed agents (displayed in red) to differentiate agents that stopped responding from agents that explicitly failed attestation.
 
 **Trace:** Dashboard - Key Performance Indicators; Dashboard - Main Screen Layout
 
@@ -214,6 +214,16 @@ Feature: Fleet Overview KPI Dashboard
     When the user navigates to the Fleet Overview Dashboard
     Then the dashboard MUST display cached KPI data with a staleness indicator
     And a banner MUST warn "Verifier API unreachable — data may be stale"
+
+  Scenario: Attestation Success Rate distinguishes Timeout from Fail
+    Given the fleet contains 240 agents in PASS or GET_QUOTE state
+    And 5 agents are in FAILED or FAIL state
+    And 2 push-mode agents are in TIMEOUT (103) state
+    When the user views the Attestation Success Rate on the Fleet Overview Dashboard
+    Then the rate MUST be computed as ((247 - 5 - 2) / 247) * 100
+    And failed agents MUST be rendered in red
+    And timed-out agents MUST be rendered in orange
+    And the visualization MUST allow the user to distinguish Timeout from Fail at a glance
 
   Scenario: Failed agent threshold alert
     Given the alert threshold for Failed Agents is configured to "any count > 0"
@@ -892,7 +902,7 @@ Feature: Cross-Tab Navigation
 
 ### FR-024: Attestation Analytics Overview
 
-**Description:** The System MUST provide an attestation analytics overview displaying: total successful attestations, total failed attestations, average latency, and success rate as summary KPIs; an hourly attestation volume bar chart; a failure reason breakdown (donut chart); a latency distribution histogram; and a top failing agents ranked list.
+**Description:** The System MUST provide an attestation analytics overview displaying: total successful attestations, total failed attestations, total timed-out attestations, average latency, and success rate as summary KPIs; an hourly attestation volume bar chart; a failure reason breakdown (donut chart); a latency distribution histogram; and a top failing agents ranked list. The hourly attestation volume bar chart MUST render three visually distinct categories: successful (green), failed (red), and timed-out (orange). Timed-out attestations represent push-mode agents that stopped submitting attestations (TIMEOUT state 103), as distinguished from agents that explicitly failed attestation (FAIL state 101).
 
 **Trace:** Attestation Analytics - Overview Dashboard
 
@@ -900,10 +910,18 @@ Feature: Cross-Tab Navigation
 Feature: Attestation Analytics Overview
 
   Scenario: Display attestation summary KPIs
-    Given there were 12,450 successful and 38 failed attestations in the last 24 hours
+    Given there were 12,450 successful, 33 failed, and 5 timed-out attestations in the last 24 hours
     When the user navigates to the Attestation Analytics view
-    Then the summary MUST show "12,450" successful, "38" failed, and the computed average latency
+    Then the summary MUST show "12,450" successful, "33" failed, "5" timed-out, and the computed average latency
     And the success rate MUST display as "99.7%"
+
+  Scenario: Hourly bar chart distinguishes Timeout from Fail
+    Given the hourly attestation volume includes successful, failed, and timed-out attestations
+    When the user views the hourly attestation volume bar chart
+    Then successful attestations MUST be rendered in green
+    And failed attestations MUST be rendered in red
+    And timed-out attestations MUST be rendered in orange
+    And the chart legend MUST display all three categories
 
   Scenario: Display top failing agents
     Given multiple agents have different failure counts
