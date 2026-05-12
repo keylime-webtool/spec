@@ -24,7 +24,7 @@ The Keylime Monitoring Dashboard (the "System") is a web-based security operatio
 
 The System transforms Keylime from a CLI-driven security tool into a visual operations platform, reducing mean time to detect (MTTD) attestation failures from hours to seconds, centralizing policy and certificate lifecycle management, and providing tamper-evident audit trails for compliance reporting.
 
-**Technical Architecture:** React.js + TypeScript SPA frontend, Rust (Axum) async backend, TimescaleDB for production time-series storage (SQLite supported for development and small deployments), Redis for production caching (in-memory fallback when unavailable), mTLS + rustls for Keylime API communication. A hexagonal repository abstraction (`Arc<dyn Trait>`) decouples business logic from storage, enabling backend portability across database and cache implementations.
+**Technical Architecture:** React.js + TypeScript SPA frontend, Rust (Axum) async backend, TimescaleDB for production time-series storage (SQLite supported for development and small deployments), Redis for production caching (in-memory fallback when unavailable), mTLS + rustls for Keylime API communication. A hexagonal repository abstraction (`Arc<dyn Trait>`) decouples business logic from storage, enabling backend portability across database and cache implementations. An alternative Cockpit plugin frontend (`cockpit-keylime`) — built with React + PatternFly 6 + esbuild — MAY be deployed as a Cockpit-native plugin running inside Cockpit (:9090), communicating with the same backend through `cockpit-bridge` (FR-088 through FR-094). The standalone SPA and the Cockpit plugin are parallel deployment options; the backend API remains unchanged.
 
 ---
 
@@ -121,6 +121,13 @@ The System transforms Keylime from a CLI-driven security tool into a visual oper
 | FR-085 | Alert Center distribution pie charts (by severity, type, state) | MUST | Revocation - Alert Workflow |
 | FR-086 | Integrations topology view with SSH connect | SHOULD | Integration Status - Backend Connectivity |
 | FR-087 | Background attestation observation recording independent of frontend | MUST | Attestation Analytics - Overview Dashboard |
+| FR-088 | Cockpit plugin manifest and sidebar registration | MUST | Cockpit Plugin - Deployment Model |
+| FR-089 | REST communication via cockpit.http() bridge proxy | MUST | Cockpit Plugin - Communication |
+| FR-090 | Real-time WebSocket via websocket-stream1 raw channel | MUST | Cockpit Plugin - Communication |
+| FR-091 | mTLS certificate configuration via cockpit-bridge tls options | MUST | Cockpit Plugin - Security |
+| FR-092 | PAM-based authentication for Cockpit deployments | MUST | Cockpit Plugin - Authentication |
+| FR-093 | RPM packaging and /usr/share/cockpit/ installation | MUST | Cockpit Plugin - Packaging |
+| FR-094 | Conditional plugin visibility via manifest conditions | SHOULD | Cockpit Plugin - Deployment Model |
 
 ### 2.2 Non-Functional Requirements
 
@@ -151,6 +158,9 @@ The System transforms Keylime from a CLI-driven security tool into a visual oper
 | NFR-023 | Maximum 5 parallel concurrent log fetches to Verifier | MUST | Technical Architecture - IMA Log & Data Decoupling |
 | NFR-024 | AI Assistant query performance and rate limiting | SHOULD | AI Assistant - Conversational Interface |
 | NFR-025 | Zero-configuration development setup with storage backend portability | MUST | Technical Architecture - Repository Abstraction |
+| NFR-026 | PatternFly 6 visual consistency with Cockpit core pages | MUST | Cockpit Plugin - UI Consistency |
+| NFR-027 | iframe isolation with no cross-plugin shared state | MUST | Cockpit Plugin - Isolation |
+| NFR-028 | cockpit-bridge as mandatory proxy for all backend communication | MUST | Cockpit Plugin - Communication Architecture |
 
 ### 2.3 Security Requirements
 
@@ -185,6 +195,7 @@ The System transforms Keylime from a CLI-driven security tool into a visual oper
 | SR-027 | Emergency bypass with break-glass audit trail | MUST | Policy Management - Two-Person Rule |
 | SR-028 | Configurable idle session timeout | MUST | Dashboard Authentication - User Identity |
 | SR-029 | Rate limiting on dashboard session creation endpoint | MUST | Attestation Modes - Comparative View |
+| SR-030 | PAM authentication replaces OIDC/JWT in Cockpit deployment mode | MUST | Cockpit Plugin - Authentication |
 
 ---
 
@@ -449,6 +460,8 @@ Feature: Dark/Light Mode
     And top bar search input text MUST be legible
 ```
 
+> **Cockpit Deployment Note:** In Cockpit deployments, theming is controlled at the OS level by Cockpit itself; individual plugins do not provide per-app theme toggles. The theme toggle button in the top bar MUST NOT be rendered when the plugin runs inside Cockpit. The plugin MUST inherit Cockpit's active theme via PatternFly 6 CSS variables (NFR-026). See FR-088.
+
 ### FR-009: In-App Notification System
 
 **Description:** The System MUST provide an in-app notification bell displaying an unread notification badge count. Notifications MUST include attestation failures, certificate expiry warnings, policy updates, agent registration events, and revocation events. Severity thresholds for generating notifications MUST be configurable.
@@ -475,6 +488,8 @@ Feature: In-App Notification System
     Then the panel MUST display an empty state with message "No new notifications"
     And the notification bell MUST NOT display a badge count
 ```
+
+> **Cockpit Deployment Note:** Cockpit provides its own notification API for surfacing alerts to the system administrator. In Cockpit deployments, the plugin MAY delegate critical notifications to Cockpit's notification system instead of rendering a standalone notification bell. When delegating, the plugin MUST use `cockpit.transport.control()` or the PatternFly `Alert` component to surface notifications within the Cockpit UI paradigm.
 
 ### FR-010: External Alert Integration
 
@@ -2276,6 +2291,8 @@ Feature: Runtime Keylime Connection Configuration
     Then the "Apply Changes" button MUST be enabled
 ```
 
+> **Cockpit Deployment Note:** In Cockpit deployments, the backend URL is configured via the cockpit-bridge configuration file (`/etc/cockpit/keylime.conf`), not through the Settings page. The Backend URL field MUST NOT be rendered in Cockpit deployments. Verifier and Registrar URLs remain configurable through the backend settings API. See FR-089, FR-091.
+
 ### FR-073: mTLS Certificate Configuration UI
 
 **Description:** The System MUST provide a certificate settings section on the Settings page for configuring mTLS client certificates used to communicate with Keylime APIs. Two input modes MUST be supported: "By directory" (a single directory path, with standard Keylime filenames `client-cert.crt`, `client-private.pem`, `cacert.crt` assumed) and "Manually" (individual paths for certificate, private key, and CA certificate files). The mode MUST be auto-detected from saved settings. The Apply button MUST be disabled when no changes exist and MUST display backend error messages on failure. Certificate configuration MUST be persisted via the backend settings API (`GET/PUT /api/settings/certificates`) and applied at runtime by reconstructing the mTLS reqwest client.
@@ -2813,6 +2830,229 @@ Feature: Background Attestation Observation Recording
     And the task MUST NOT crash or panic
     And the task MUST retry on the subsequent interval
     And previously recorded observations MUST remain intact in the repository
+```
+
+### FR-088: Cockpit Plugin Manifest and Sidebar Registration
+
+**Description:** The cockpit-keylime plugin MUST include a `manifest.json` file that registers the plugin in the Cockpit sidebar navigation menu. The manifest MUST declare the plugin's display name, menu path, and entry point. When Cockpit loads, the plugin MUST appear as a sidebar entry under the appropriate category (e.g., "Networking" or a custom "Security" category). The plugin MUST load its entry point (`index.html`) inside a Cockpit iframe when the user clicks the sidebar entry. The manifest MUST declare the plugin's required Cockpit API version.
+
+**Trace:** Cockpit Plugin - Deployment Model; FR-003 (Sidebar Navigation)
+
+```gherkin
+Feature: Cockpit Plugin Manifest and Sidebar Registration
+
+  Scenario: Plugin appears in Cockpit sidebar
+    Given the cockpit-keylime RPM is installed to /usr/share/cockpit/keylime/
+    And the manifest.json declares a menu entry "Keylime Attestation"
+    When the user logs into Cockpit at :9090
+    Then a "Keylime Attestation" entry MUST appear in the Cockpit sidebar
+    And clicking the entry MUST load the plugin's index.html in the content iframe
+
+  Scenario: Manifest declares required Cockpit API version
+    Given the manifest.json includes a "requires" field specifying the minimum Cockpit version
+    When Cockpit loads the plugin manifest
+    Then Cockpit MUST validate the version requirement before registering the plugin
+    And if the running Cockpit version is below the minimum, the plugin MUST NOT appear in the sidebar
+
+  Scenario: Plugin loads in isolated iframe
+    Given the user clicks "Keylime Attestation" in the Cockpit sidebar
+    When the plugin content loads
+    Then the plugin MUST render inside a Cockpit-managed iframe
+    And the plugin's DOM MUST be isolated from other Cockpit pages and plugins
+```
+
+### FR-089: REST Communication via cockpit.http() Bridge Proxy
+
+**Description:** In Cockpit deployments, the plugin MUST use `cockpit.http()` to send REST API requests to the `keylime-webtool-backend`. The `cockpit.http()` call MUST be configured with the backend's host and port, and MUST include TLS options (`tls.authority`, `tls.certificate`, `tls.key`) when mTLS is required (FR-091). The cockpit-bridge acts as a server-side proxy: HTTP requests are issued from the server running Cockpit, not from the browser. The plugin MUST NOT make direct browser-to-backend HTTP requests. All API requests MUST flow through `cockpit.http()` and MUST use the same REST API contract as the standalone SPA (SDD 3.4.1 through 3.4.3).
+
+**Trace:** Cockpit Plugin - Communication; NFR-028 (Mandatory Bridge Proxy); SDD 3.4.3 (REST API)
+
+```gherkin
+Feature: REST Communication via cockpit.http() Bridge Proxy
+
+  Scenario: Fetch agent list through cockpit-bridge
+    Given the cockpit-keylime plugin is loaded in Cockpit
+    And the backend is running at host "backend.local" port 8080
+    When the plugin requests the agent list
+    Then the request MUST be issued via cockpit.http("backend.local", { port: 8080 })
+    And the HTTP request MUST originate from the Cockpit server, not the browser
+    And the response MUST conform to the standard API envelope (SDD 3.4.1)
+
+  Scenario: cockpit.http() handles backend error
+    Given the backend returns HTTP 502 Bad Gateway
+    When the plugin receives the error response via cockpit.http()
+    Then the plugin MUST parse the standard error envelope
+    And the plugin MUST display a descriptive error message to the user
+
+  Scenario: No direct browser-to-backend requests
+    Given the cockpit-keylime plugin is loaded in Cockpit
+    When the plugin communicates with the backend
+    Then no XMLHttpRequest or fetch() calls MUST be made directly to the backend from the browser
+    And all REST communication MUST flow through cockpit.http() via cockpit-bridge
+```
+
+### FR-090: Real-Time WebSocket via websocket-stream1 Raw Channel
+
+**Description:** In Cockpit deployments, the plugin MUST use `cockpit.channel()` with the `websocket-stream1` payload type to establish a WebSocket connection to the backend's `/ws/events` endpoint through cockpit-bridge. The channel MUST carry the same JSON message format as the standalone SPA's native WebSocket connection (SDD 3.4.4). The plugin MUST implement reconnection logic with exponential backoff (matching the standalone SPA's 2^n * 1000ms strategy, capped at 30 seconds) when the channel closes unexpectedly. The backend's WebSocket protocol remains unchanged — cockpit-bridge translates the raw channel into a standard WebSocket connection.
+
+**Trace:** Cockpit Plugin - Communication; NFR-021 (WebSocket Real-Time Updates); SDD 3.4.4
+
+```gherkin
+Feature: Real-Time WebSocket via websocket-stream1 Raw Channel
+
+  Scenario: Receive real-time agent state updates
+    Given the cockpit-keylime plugin has opened a websocket-stream1 channel to /ws/events
+    When an agent transitions from GET_QUOTE to FAILED on the backend
+    Then the plugin MUST receive a JSON message through the channel
+    And the message format MUST match the WebSocket protocol defined in SDD 3.4.4
+    And the plugin MUST update the UI to reflect the state change
+
+  Scenario: Reconnect on channel close
+    Given the websocket-stream1 channel is established
+    When cockpit-bridge closes the channel unexpectedly
+    Then the plugin MUST attempt reconnection with exponential backoff
+    And the backoff interval MUST start at 1 second and cap at 30 seconds
+    And a connection status indicator MUST show "reconnecting"
+
+  Scenario: Channel uses cockpit-bridge as proxy
+    Given the plugin opens a websocket-stream1 channel
+    When the channel connects to the backend WebSocket endpoint
+    Then the connection MUST be proxied through cockpit-bridge
+    And no direct browser WebSocket connection MUST be established to the backend
+```
+
+### FR-091: mTLS Certificate Configuration via cockpit-bridge TLS Options
+
+**Description:** In Cockpit deployments, mTLS certificates for backend communication MUST be configured via cockpit-bridge TLS options passed to `cockpit.http()` and `cockpit.channel()`. The plugin MUST read certificate paths from a configuration file (e.g., `/etc/cockpit/keylime.conf`) and pass them as `tls.authority` (CA certificate), `tls.certificate` (client certificate), and `tls.key` (client private key) parameters. Certificate files MUST be readable by the cockpit-ws process. The plugin MUST NOT expose certificate file paths in the browser DOM or JavaScript console. This replaces the Settings page certificate configuration (FR-073) for Cockpit deployments — the mTLS certificate section MUST NOT be rendered in Cockpit mode.
+
+**Trace:** Cockpit Plugin - Security; FR-073 (mTLS Certificate Configuration); SR-004 (mTLS)
+
+```gherkin
+Feature: mTLS Certificate Configuration via cockpit-bridge TLS Options
+
+  Scenario: cockpit-bridge uses mTLS for backend communication
+    Given /etc/cockpit/keylime.conf specifies certificate paths:
+      | Key             | Value                                |
+      | tls.authority   | /etc/keylime/certs/cacert.crt        |
+      | tls.certificate | /etc/keylime/certs/client-cert.crt   |
+      | tls.key         | /etc/keylime/certs/client-private.pem |
+    When the plugin issues a cockpit.http() request to the backend
+    Then cockpit-bridge MUST establish the connection using the configured client certificate
+    And the backend MUST validate the client certificate via mTLS
+
+  Scenario: Missing certificate configuration
+    Given /etc/cockpit/keylime.conf does not contain TLS configuration
+    When the plugin attempts to connect to the backend via cockpit.http()
+    Then the plugin MUST display an error indicating missing mTLS configuration
+    And the plugin MUST NOT fall back to unencrypted communication
+
+  Scenario: Certificate paths not exposed to browser
+    Given the plugin reads certificate paths from the configuration file
+    When the plugin renders in the browser
+    Then certificate file paths MUST NOT appear in the browser DOM
+    And certificate file paths MUST NOT be logged to the JavaScript console
+```
+
+### FR-092: PAM-Based Authentication for Cockpit Deployments
+
+**Description:** In Cockpit deployments, user authentication MUST be handled by Cockpit's PAM-based system login. The OIDC/SAML authentication flow (SR-001) MUST NOT be used. The cockpit-bridge MUST pass the authenticated system user identity to the backend. The backend MUST map the system user to its RBAC role (SR-003) using a configurable mapping (e.g., system group membership → dashboard role). The plugin MUST NOT display a login page — Cockpit's login screen handles authentication before the plugin loads. Session lifetime MUST be governed by the Cockpit session, not by JWT expiry (SR-010).
+
+**Trace:** Cockpit Plugin - Authentication; SR-001 (OIDC/SAML Authentication); SR-030 (PAM Authentication); SR-003 (RBAC)
+
+```gherkin
+Feature: PAM-Based Authentication for Cockpit Deployments
+
+  Scenario: User authenticates via Cockpit login
+    Given the user navigates to Cockpit at :9090
+    When the user enters valid system credentials (PAM authentication)
+    Then Cockpit MUST establish an authenticated session
+    And the cockpit-keylime plugin MUST load without requiring additional authentication
+    And the plugin MUST NOT display a login page
+
+  Scenario: System user mapped to RBAC role
+    Given the system user "admin-user" belongs to the "keylime-admin" group
+    And the backend role mapping is configured as: keylime-admin → Admin
+    When the plugin requests user role information from the backend
+    Then the backend MUST return the Admin role for this user
+    And the plugin MUST render Admin-level controls
+
+  Scenario: Unauthenticated access prevented
+    Given the user has not logged into Cockpit
+    When the user attempts to access the Cockpit URL directly
+    Then Cockpit MUST redirect the user to its PAM login screen
+    And no plugin content MUST be rendered until authentication succeeds
+
+  Scenario: Session governed by Cockpit
+    Given the user is authenticated via Cockpit's PAM login
+    When the Cockpit session expires or the user logs out of Cockpit
+    Then the plugin session MUST terminate immediately
+    And the plugin MUST NOT maintain an independent session via JWT
+```
+
+### FR-093: RPM Packaging and /usr/share/cockpit/ Installation
+
+**Description:** The cockpit-keylime plugin MUST be packaged as an RPM. The RPM MUST install all plugin assets (JavaScript bundle, HTML entry point, manifest.json, CSS, and static resources) to `/usr/share/cockpit/keylime/`. The RPM MUST declare dependencies on `cockpit-ws` and `cockpit-bridge`. The RPM MUST NOT require a post-install service restart — Cockpit dynamically discovers plugins from `/usr/share/cockpit/`. The RPM MUST include a configuration template at `/etc/cockpit/keylime.conf.example` with documented backend connection and TLS settings. The RPM MUST be installable on RHEL 9+, CentOS Stream 9+, and Fedora 39+ systems.
+
+**Trace:** Cockpit Plugin - Packaging; NFR-012 (Air-Gapped Deployment); NFR-013 (Self-Contained Packaging); NFR-015 (RPM Deployment)
+
+```gherkin
+Feature: RPM Packaging and Installation
+
+  Scenario: Install plugin via RPM
+    Given the cockpit-keylime RPM package is available
+    When the administrator runs "dnf install cockpit-keylime"
+    Then the RPM MUST install files to /usr/share/cockpit/keylime/
+    And the installed files MUST include manifest.json, index.html, and the JavaScript bundle
+    And the plugin MUST appear in the Cockpit sidebar without restarting cockpit-ws
+
+  Scenario: RPM declares correct dependencies
+    Given the cockpit-keylime RPM spec
+    Then the RPM MUST declare "Requires: cockpit-ws" and "Requires: cockpit-bridge"
+    And the RPM MUST NOT declare dependencies on external CDNs or runtime internet access
+
+  Scenario: Configuration template installed
+    Given the cockpit-keylime RPM is installed
+    Then a configuration template MUST exist at /etc/cockpit/keylime.conf.example
+    And the template MUST document all configurable settings including backend URL and TLS paths
+
+  Scenario: Uninstall removes plugin cleanly
+    Given the cockpit-keylime RPM is installed
+    When the administrator runs "dnf remove cockpit-keylime"
+    Then all files in /usr/share/cockpit/keylime/ MUST be removed
+    And the plugin MUST no longer appear in the Cockpit sidebar
+    And user configuration in /etc/cockpit/keylime.conf MUST be preserved
+```
+
+### FR-094: Conditional Plugin Visibility via Manifest Conditions
+
+**Description:** The cockpit-keylime manifest.json SHOULD support a `conditions` field that controls plugin visibility based on system state. The plugin SHOULD use `path-exists` conditions to verify that required files (e.g., the backend configuration file or mTLS certificates) are present before registering the plugin in the sidebar. When conditions are not met, the plugin MUST NOT appear in the Cockpit sidebar. This prevents users from seeing a non-functional plugin entry when the backend or certificates are not configured on the local system.
+
+**Trace:** Cockpit Plugin - Deployment Model; FR-088 (Plugin Manifest)
+
+```gherkin
+Feature: Conditional Plugin Visibility via Manifest Conditions
+
+  Scenario: Plugin hidden when configuration is missing
+    Given the manifest.json declares a condition: path-exists "/etc/cockpit/keylime.conf"
+    And the file /etc/cockpit/keylime.conf does not exist on the system
+    When the user logs into Cockpit
+    Then the "Keylime Attestation" entry MUST NOT appear in the Cockpit sidebar
+
+  Scenario: Plugin visible when configuration exists
+    Given the manifest.json declares a condition: path-exists "/etc/cockpit/keylime.conf"
+    And the file /etc/cockpit/keylime.conf exists on the system
+    When the user logs into Cockpit
+    Then the "Keylime Attestation" entry MUST appear in the Cockpit sidebar
+
+  Scenario: Multiple conditions evaluated
+    Given the manifest.json declares conditions:
+      | Condition    | Path                                  |
+      | path-exists  | /etc/cockpit/keylime.conf             |
+      | path-exists  | /etc/keylime/certs/client-cert.crt    |
+    When all condition paths exist on the system
+    Then the plugin MUST appear in the Cockpit sidebar
+    But if any condition path is missing
+    Then the plugin MUST NOT appear in the Cockpit sidebar
 ```
 
 ---
@@ -3413,6 +3653,95 @@ Feature: Zero-Configuration Development Setup
     Then the System MUST reject the self-approval with "self-approval not permitted"
 ```
 
+### NFR-026: PatternFly 6 Visual Consistency with Cockpit Core Pages
+
+**Description:** When deployed as a Cockpit plugin, the plugin MUST use PatternFly 6 as its component library to ensure visual consistency with Cockpit core pages and other Cockpit plugins. The plugin MUST inherit Cockpit's active theme via PatternFly CSS custom properties. The plugin MUST NOT use custom CSS that overrides PatternFly 6 visual tokens (colors, spacing, typography) in ways that create visual inconsistency with Cockpit's native pages. Navigation patterns MUST follow Cockpit conventions — the plugin MUST NOT render its own sidebar when running inside Cockpit, since Cockpit provides the global sidebar.
+
+**Trace:** Cockpit Plugin - UI Consistency; FR-003 (Sidebar Navigation); FR-008 (Dark/Light Mode)
+
+```gherkin
+Feature: PatternFly 6 Visual Consistency
+
+  Scenario: Plugin matches Cockpit visual theme
+    Given the cockpit-keylime plugin is loaded in Cockpit
+    And Cockpit is rendering in its default theme
+    When the user views the plugin content
+    Then all components MUST use PatternFly 6 components and CSS variables
+    And the plugin's visual appearance MUST be consistent with Cockpit core pages (Overview, Networking, Storage)
+
+  Scenario: Plugin does not render its own sidebar
+    Given the cockpit-keylime plugin is loaded in Cockpit
+    When the plugin content renders
+    Then the plugin MUST NOT render a standalone sidebar navigation
+    And navigation within the plugin MUST use page-level tabs or breadcrumbs
+    And the Cockpit global sidebar MUST remain the primary navigation mechanism
+
+  Scenario: PatternFly theme variables inherited
+    Given Cockpit applies a dark theme via OS-level preference
+    When the cockpit-keylime plugin renders
+    Then the plugin MUST inherit the dark theme via PatternFly 6 CSS custom properties
+    And no manual theme toggle MUST be rendered (FR-008 Cockpit note)
+```
+
+### NFR-027: iframe Isolation — No Cross-Plugin Shared State
+
+**Description:** Each Cockpit plugin runs inside its own iframe. The cockpit-keylime plugin MUST NOT share DOM state, JavaScript variables, or browser storage (localStorage, sessionStorage, cookies) with other Cockpit plugins or the Cockpit shell. All plugin state MUST be self-contained within the plugin's iframe context. Communication with the Cockpit shell MUST occur exclusively through the `cockpit.js` API (e.g., `cockpit.transport`, `cockpit.location`, `cockpit.http()`). The plugin MUST NOT use `window.parent`, `postMessage`, or other cross-frame APIs to interact with other plugins.
+
+**Trace:** Cockpit Plugin - Isolation; SR-019 (Multi-Tenancy Isolation)
+
+```gherkin
+Feature: iframe Isolation
+
+  Scenario: Plugin state isolated from other plugins
+    Given the cockpit-keylime plugin and another Cockpit plugin are both loaded
+    When the cockpit-keylime plugin stores data in its iframe's localStorage
+    Then the other plugin MUST NOT be able to access that data
+    And the Cockpit shell MUST NOT expose the plugin's localStorage to other plugins
+
+  Scenario: No cross-frame API usage
+    Given the cockpit-keylime plugin is loaded in its iframe
+    When the plugin JavaScript executes
+    Then the plugin MUST NOT call window.parent or use postMessage to other frames
+    And all Cockpit shell communication MUST use the cockpit.js API exclusively
+
+  Scenario: Plugin crash does not affect other plugins
+    Given the cockpit-keylime plugin encounters a JavaScript error
+    When the error is thrown in the plugin's iframe
+    Then other Cockpit plugins MUST continue to function normally
+    And the Cockpit shell MUST remain responsive
+```
+
+### NFR-028: cockpit-bridge as Mandatory Proxy for All Backend Communication
+
+**Description:** In Cockpit deployments, all communication between the plugin and the keylime-webtool-backend MUST flow through cockpit-bridge. The plugin MUST NOT make direct HTTP or WebSocket connections from the browser to the backend. cockpit-bridge acts as a server-side proxy, issuing network requests from the Cockpit server host on behalf of the plugin. This architecture eliminates CORS requirements, keeps mTLS certificates server-side (never exposed to the browser), and leverages Cockpit's existing authentication and access control. The backend API endpoints, request formats, and response formats MUST remain identical regardless of whether the request originates from the standalone SPA or the Cockpit plugin via cockpit-bridge.
+
+**Trace:** Cockpit Plugin - Communication Architecture; FR-089 (cockpit.http()); FR-090 (websocket-stream1); SR-004 (mTLS)
+
+```gherkin
+Feature: cockpit-bridge as Mandatory Proxy
+
+  Scenario: All REST requests flow through cockpit-bridge
+    Given the cockpit-keylime plugin is loaded in Cockpit
+    When the plugin fetches data from the backend REST API
+    Then the HTTP request MUST be issued by cockpit-bridge from the server side
+    And no CORS preflight request MUST be observed in browser network traffic
+    And the backend MUST NOT need CORS headers for Cockpit plugin requests
+
+  Scenario: All WebSocket connections flow through cockpit-bridge
+    Given the cockpit-keylime plugin establishes a real-time event channel
+    When the websocket-stream1 channel is opened
+    Then cockpit-bridge MUST establish the WebSocket connection to the backend
+    And the browser MUST NOT hold a direct WebSocket connection to the backend
+
+  Scenario: Backend receives identical requests from SPA and Cockpit
+    Given the standalone SPA sends GET /api/agents to the backend
+    And the Cockpit plugin sends the same request via cockpit.http()
+    When the backend processes both requests
+    Then the request format MUST be identical
+    And the response format MUST be identical
+    And the backend MUST NOT require any Cockpit-specific API logic
+```
+
 ---
 
 ## 5. Security Requirements Detail
@@ -3444,6 +3773,8 @@ Feature: OIDC/SAML Authentication
     Then the System MUST redirect the user to re-authenticate via the IdP
     And the user MUST be returned to their original page after re-authentication
 ```
+
+> **Cockpit Deployment Note:** In Cockpit deployments, PAM-based system login replaces OIDC/SAML authentication. The OIDC flow described above MUST NOT be used when the plugin runs inside Cockpit. Authentication is handled by Cockpit's PAM login screen before the plugin loads. See SR-030, FR-092.
 
 ### SR-002: MFA for Admin Role
 
@@ -4058,6 +4389,47 @@ Feature: Session Creation Rate Limiting
     Then the client MUST be able to attempt login again
 ```
 
+### SR-030: PAM Authentication Replaces OIDC/JWT in Cockpit Deployment Mode
+
+**Description:** In Cockpit deployments, the System MUST authenticate users via PAM (Pluggable Authentication Modules) through Cockpit's login screen. The OIDC/SAML authentication flow (SR-001) and JWT session management (SR-010) MUST NOT be used in Cockpit mode. Cockpit's `cockpit-bridge` runs as the authenticated system user; the backend MUST derive the user identity from the system-level authentication context provided by the bridge. The backend MUST map system user identity (username and group membership) to RBAC roles (SR-003) using a configurable role mapping. MFA requirements (SR-002) MUST be enforced at the PAM level (e.g., via `pam_google_authenticator` or SSSD with IdP-backed MFA) rather than via OIDC claims. Session lifetime MUST be governed by the Cockpit session — the backend MUST NOT issue or validate JWTs for Cockpit-originated requests.
+
+**Trace:** Cockpit Plugin - Authentication; SR-001 (OIDC/SAML); SR-002 (MFA); SR-003 (RBAC); SR-010 (JWT); FR-092 (PAM Authentication)
+
+```gherkin
+Feature: PAM Authentication in Cockpit Mode
+
+  Scenario: Backend authenticates Cockpit requests via system user
+    Given the cockpit-keylime plugin sends a request via cockpit.http()
+    And cockpit-bridge is running as system user "secops-operator"
+    When the backend receives the proxied request
+    Then the backend MUST identify the user as "secops-operator" from the bridge context
+    And the backend MUST NOT require a JWT Bearer token in the Authorization header
+
+  Scenario: RBAC role derived from system groups
+    Given system user "secops-operator" belongs to groups: keylime-operator, wheel
+    And the role mapping is configured as:
+      | System Group      | Dashboard Role |
+      | keylime-admin     | Admin          |
+      | keylime-operator  | Operator       |
+      | keylime-viewer    | Viewer         |
+    When the backend resolves the role for "secops-operator"
+    Then the user MUST receive the Operator role
+    And RBAC enforcement (SR-003) MUST apply based on the Operator permission set
+
+  Scenario: MFA enforced at PAM level
+    Given the system PAM configuration requires MFA for all logins
+    When the user attempts to log into Cockpit without completing MFA
+    Then PAM MUST reject the authentication attempt
+    And the user MUST NOT be able to access any Cockpit plugin, including cockpit-keylime
+
+  Scenario: No JWT issued for Cockpit requests
+    Given the cockpit-keylime plugin is communicating with the backend
+    When the backend processes a Cockpit-originated request
+    Then the backend MUST NOT issue a JWT access token
+    And the backend MUST NOT validate a JWT Bearer token
+    And session state MUST be derived from the Cockpit session, not from a JWT claim
+```
+
 ---
 
 ## 6. Implementation Phasing
@@ -4069,6 +4441,8 @@ As defined in the source presentation, the implementation follows three phases:
 **Phase 2 — Operations:** Attestation analytics, policy management UI, certificate monitoring, alert notifications, push mode (v3 API) support, SIEM integration, WebSocket updates, SSRF-validated webhooks, Prometheus metrics endpoint.
 
 **Phase 3 — Enterprise Scale:** Multi-tenancy, compliance reports (NIST, PCI DSS, SOC 2, FedRAMP), incident response integration (ServiceNow, Jira, PagerDuty), HA deployment, air-gapped packaging, multi-cluster support, WCAG 2.1 AA accessibility.
+
+**Cockpit Plugin Deployment:** The Cockpit plugin (`cockpit-keylime`) is an alternative frontend deployment target introduced in Phase 2 alongside the standalone SPA. It provides the same monitoring capabilities within the Cockpit system administration environment (FR-088 through FR-094, NFR-026 through NFR-028, SR-030). The backend API remains unchanged across both deployment models.
 
 **Trace:** Implementation Roadmap
 
@@ -4106,7 +4480,11 @@ The design details that realize these requirements -- including component decomp
 | IR-018: Backend Health Probes | 3.7.3 | Algorithm View |
 | IR-019: Repository Abstraction Layer | 3.3.11 | Logical View |
 | IR-020: Background Attestation Recording | 3.5.4 | Interaction View |
+| IR-021: Cockpit Context View | 3.1.3 | Context View |
+| IR-022: Cockpit Plugin Composition | 3.2.4 | Composition View |
+| IR-023: Cockpit Bridge Interface Contracts | 3.4.6 | Interface View |
 
 <!-- CHANGED: Added IR-020 for background attestation recording -->
+<!-- CHANGED: Added IR-021 through IR-023 for Cockpit plugin deployment model -->
 
 The SDD also includes a full SRS traceability matrix (Section 6) mapping every implemented requirement to its corresponding design element.
