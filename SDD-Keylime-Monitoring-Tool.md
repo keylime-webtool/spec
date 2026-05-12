@@ -1066,15 +1066,16 @@ The attestation timeline (FR-024) distributes event counts across hourly buckets
 
 The frontend derives attestation KPIs from agent state data when no attestation history endpoint is available (FR-001):
 
-| KPI | Computation |
-|-----|------------|
-| Total Agents | `paginated_response.total_items` or `agents.length` |
-| Failed Attestations | Count of agents in `failed`, `invalid_quote`, `tenant_failed` (pull) or `fail`, `timeout` (push) state |
-| Success Rate | `((total - failed) / total) * 100` |
-| Urgent Alerts | From `GET /api/alerts/summary` -> `critical + warnings` count; subtitle shows per-severity breakdown (e.g., "2 critical, 2 warnings") |
-| Alert Center: Critical | From `GET /api/alerts/summary` -> `critical` (all states) |
-| Alert Center: Warnings | From `GET /api/alerts/summary` -> `warnings` (all states) |
-| Alert Center: Info | From `GET /api/alerts/summary` -> `info` (all states) |
+| KPI | Computation | Color |
+|-----|------------|-------|
+| Total Agents | `paginated_response.total_items` or `agents.length` | — |
+| Failed Attestations | Count of agents in `failed`, `invalid_quote`, `tenant_failed` (pull) or `fail` (push) state | Red |
+| Timed-Out Attestations | Count of agents in `timeout` (push) state | Orange |
+| Success Rate | `((total - failed - timed_out) / total) * 100` | — |
+| Urgent Alerts | From `GET /api/alerts/summary` -> `critical + warnings` count; subtitle shows per-severity breakdown (e.g., "2 critical, 2 warnings") | — |
+| Alert Center: Critical | From `GET /api/alerts/summary` -> `critical` (all states) | — |
+| Alert Center: Warnings | From `GET /api/alerts/summary` -> `warnings` (all states) | — |
+| Alert Center: Info | From `GET /api/alerts/summary` -> `info` (all states) | — |
 
 **Rationale:** Ensures the dashboard displays meaningful data before TimescaleDB attestation history persistence is implemented.
 
