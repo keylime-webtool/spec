@@ -97,9 +97,9 @@ The System transforms Keylime from a CLI-driven security tool into a visual oper
 | FR-061 | Tamper-evident hash-chained audit logging | MUST | Compliance - Tamper-Evident Audit Logging |
 | FR-062 | Incident response ticketing integration | SHOULD | Incident Response - Integration |
 | FR-063 | SIEM integration (Syslog, Splunk HEC, ECS, Prometheus, OpenTelemetry) | MUST | Incident Response - Integration |
-| FR-064 | Verifier cluster performance monitoring | MUST | System Performance - Verifier Metrics |
-| FR-065 | Database connection pool monitoring | MUST | System Performance - Verifier Metrics |
-| FR-066 | API response time tracking (p50/p95/p99) | MUST | System Performance - Verifier Metrics |
+| FR-064 | Verifier reachability, latency, and capacity monitoring | MUST | System Performance - Verifier Metrics |
+| FR-065 | Database connection pool monitoring (dashboard backend) | MUST | System Performance - Verifier Metrics |
+| FR-066 | API response time tracking | MUST | System Performance - Verifier Metrics |
 | FR-067 | Live configuration view with drift detection | MUST | System Performance - Configuration Monitoring |
 | FR-068 | Capacity planning projections | SHOULD | System Performance - Key Metrics |
 | FR-069 | Agent state machine visualization (pull + push) | MUST | Keylime - Agent State Machine / Push Mode |
@@ -1976,38 +1976,42 @@ Feature: SIEM Integration
     And a WARNING alert MUST be raised indicating "SIEM endpoint unreachable"
 ```
 
-### FR-064: Verifier Cluster Performance Monitoring
+### FR-064: Verifier Reachability, Latency, and Capacity Monitoring
 
-**Description:** The System MUST monitor verifier cluster performance including: CPU utilization per worker process, memory usage (RSS, heap), open file descriptors, thread pool utilization, network connections (active/idle), attestations per second, queue depth (pending verifications), worker split (web vs. verification), `dedicated_web_workers` utilization, exponential backoff events, and rate limit rejections.
+**Description:** The System MUST monitor verifier cluster health using metrics derivable from the Keylime REST API and the dashboard backend's own instrumentation. Monitored metrics MUST include: verifier reachability (boolean probe per node), API round-trip latency in milliseconds, circuit breaker state (closed/open/half-open) per NFR-017, registered agent count (from `GET /v2.x/agents/`), estimated attestation rate (derived by sampling `attestation_count` deltas across polling intervals), and capacity utilization percentage (current agent count relative to the configured maximum).
 
 **Trace:** System Performance - Verifier Metrics
 
 ```gherkin
-Feature: Verifier Cluster Performance Monitoring
+Feature: Verifier Reachability, Latency, and Capacity Monitoring
 
-  Scenario: Display verifier node resource metrics
+  Scenario: Display verifier reachability and latency
     Given the deployment has two verifier nodes and one registrar
     When the user navigates to System Performance
-    Then each verifier node MUST display CPU utilization, memory usage, and connection counts
-    And the registrar MUST display its own resource metrics independently
+    Then each verifier node MUST display a reachability indicator (green "UP" or red "DOWN")
+    And each reachable verifier MUST display its API round-trip latency in milliseconds
+    And the circuit breaker state MUST be displayed for each verifier node
 
-  Scenario: Alert on verifier overload
-    Given Verifier-02 CPU utilization exceeds 70%
-    When the System evaluates verifier health
-    Then Verifier-02 MUST display a yellow "HIGH LOAD" indicator
-    And a WARNING alert MUST be raised indicating the affected node
-
-  Scenario: Verifier node unreachable
+  Scenario: Alert on verifier unreachable
     Given the deployment has two verifier nodes
     And Verifier-02 is unreachable
-    When the System polls verifier health
-    Then Verifier-02 MUST display a red "DOWN" indicator
+    When the circuit breaker opens after consecutive failures (NFR-017)
+    Then Verifier-02 MUST display a red "DOWN" indicator with circuit breaker state "OPEN"
     And a CRITICAL alert MUST be raised indicating "Verifier-02 unreachable"
+
+  Scenario: Display estimated attestation rate and capacity
+    Given the System has polled agent attestation_count values at two successive intervals
+    When the user views the System Performance summary
+    Then the estimated attestation rate (attestations per second) MUST be displayed
+    And the agent capacity utilization MUST be displayed as a percentage
+    And a WARNING indicator MUST appear when capacity utilization exceeds 80%
 ```
 
-### FR-065: Database Connection Pool Monitoring
+**Implementation Notes:** The upstream Keylime REST API is an agent-management API, not a monitoring API. It does not expose host-level resource metrics (CPU utilization, memory usage, open file descriptors, thread pool utilization, network connections, or queue depth). The attestation rate is a derived metric computed by the dashboard backend by sampling `attestation_count` deltas over successive polling intervals — it is not read directly from a Keylime endpoint. Host-level verifier resource monitoring would require an external observability stack (e.g., Prometheus node exporter deployed on the verifier host) and is outside the scope of this requirement.
 
-**Description:** The System MUST monitor the Keylime database connection pool: active/idle connections, pool size and overflow count, connection wait time, pool exhaustion events, and `database_pool_sz_ovfl` settings. Query performance metrics MUST include: slow query detection (>100ms), query count by type (SELECT/UPDATE), table row counts, index hit ratio, and migration status (Alembic revision).
+### FR-065: Database Connection Pool Monitoring (Dashboard Backend)
+
+**Description:** The System MUST monitor the dashboard backend's own database connection pool (TimescaleDB): active/idle connections, pool size and overflow count, connection wait time, and pool exhaustion events. Query performance metrics MUST include: slow query detection (>100ms), query count by type (SELECT/UPDATE), and table row counts. The Keylime Verifier's internal database pool (SQLAlchemy/Alembic) is not exposed through the Keylime REST API and is outside the scope of this requirement.
 
 **Trace:** System Performance - Verifier Metrics
 
@@ -2036,7 +2040,7 @@ Feature: Database Connection Pool Monitoring
 
 ### FR-066: API Response Time Tracking
 
-**Description:** The System MUST track API response times at p50, p95, and p99 percentiles for all Keylime API endpoints. Tracked endpoints MUST include at minimum: `GET /agents/`, `GET /agents/:id`, `POST /attestations`, `PATCH /attestations/:idx`, `GET /policies/ima`, and `POST /sessions`. Response times MUST be color-coded: green (<threshold), yellow (warning), red (critical).
+**Description:** The System MUST track round-trip response times as measured by the dashboard backend when calling Keylime API endpoints. Tracked endpoints MUST include at minimum: `GET /agents/`, `GET /agents/:id`, `POST /attestations`, `PATCH /attestations/:idx`, `GET /policies/ima`, and `POST /sessions`. Response times MUST be color-coded: green (<threshold), yellow (warning), red (critical). The System SHOULD aggregate response times into p50, p95, and p99 percentiles when TimescaleDB time-series storage is available; the initial implementation MAY track per-request latency only.
 
 **Trace:** System Performance - Verifier Metrics
 
@@ -2044,21 +2048,22 @@ Feature: Database Connection Pool Monitoring
 Feature: API Response Time Tracking
 
   Scenario: Display API response time percentiles
-    Given the System has collected response time data for GET /agents/
+    Given the dashboard backend has collected response time data for GET /agents/
     When the user views the API Response Times panel
-    Then p50, p95, and p99 response times MUST be displayed for GET /agents/
-    And each percentile MUST be color-coded based on configured thresholds
+    Then response times MUST be displayed for GET /agents/
+    And each value MUST be color-coded based on configured thresholds
+    And p50, p95, and p99 percentiles SHOULD be displayed when historical data is available
 
   Scenario: Alert on degraded API response times
     Given the p99 response time for PATCH /attestations/:idx exceeds 1200ms
     And the critical threshold is configured at 1000ms
-    When the System evaluates API performance
+    When the dashboard backend evaluates API performance
     Then the PATCH /attestations/:idx p99 value MUST display in red
     And a WARNING alert MUST be raised indicating API latency degradation
 
   Scenario: API endpoint returns errors
     Given the POST /attestations endpoint returns HTTP 500 errors
-    When the System tracks API response codes
+    When the dashboard backend tracks API response codes
     Then the error rate MUST be displayed alongside response times
     And a CRITICAL alert MUST be raised if the error rate exceeds the configured threshold
 ```
