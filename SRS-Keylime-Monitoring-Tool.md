@@ -544,7 +544,7 @@ Feature: Configurable Alert Thresholds
 
 ### FR-012: Agent Fleet List View
 
-**Description:** The System MUST display agents in a sortable, paginated table with columns: Agent ID, IP Address, Operational State, Last Attestation time, Assigned Policy, Failure Count, and Actions. Rows for agents in FAILED or INVALID_QUOTE states MUST be visually highlighted. Rows for agents in RETRY state MUST be highlighted with a warning indicator. For push-mode (v3 API) agents, rows in FAIL (101) or TIMEOUT (103) states MUST be highlighted with a critical indicator. The System MUST recognize all Keylime operational states including `Start` (1) and `Saved` (2) for pull mode, and `Pass` (100), `Fail` (101), `Pending` (102), and `Timeout` (103) for push mode. When the agent list fails to load, the System MUST display a descriptive error message instead of an empty table.
+**Description:** The System MUST display agents in a sortable, paginated table with columns: Agent ID, IP Address, Operational State, Last Attestation time, Assigned Policy, Failure Count, and Actions. Rows for agents in FAILED or INVALID_QUOTE states MUST be visually highlighted. Rows for agents in RETRY state MUST be highlighted with a warning indicator. For push-mode (v3 API) agents, rows in FAIL (101) state MUST be highlighted with a critical indicator; rows in TIMEOUT (103) state MUST be highlighted with a warning indicator to distinguish unresponsive agents from explicitly failed attestations, consistent with FR-001. The System MUST recognize all Keylime operational states including `Start` (1) and `Saved` (2) for pull mode, and `Pass` (100), `Fail` (101), `Pending` (102), and `Timeout` (103) for push mode. When the agent list fails to load, the System MUST display a descriptive error message instead of an empty table.
 
 **Trace:** Agent Fleet - List View
 
@@ -559,7 +559,8 @@ Feature: Agent Fleet List View
     And agents in RETRY state MUST display with a warning indicator
     And agents in START or SAVED state MUST display with an informational indicator
     And push-mode agents in PASS state MUST display with a success indicator
-    And push-mode agents in FAIL or TIMEOUT state MUST display with a critical indicator
+    And push-mode agents in FAIL state MUST display with a critical indicator
+    And push-mode agents in TIMEOUT state MUST display with a warning indicator
     And push-mode agents in PENDING state MUST display with an informational indicator
     And each row MUST show Agent ID, IP, State, Last Attest, Policy, Failures, and Actions
 
